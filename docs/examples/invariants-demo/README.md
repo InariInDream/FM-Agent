@@ -30,11 +30,12 @@
 | 文件 | 说明 |
 | --- | --- |
 | `stream_processor.py` | 演示目标（buggy 版，37 行） |
-| `stream_processor_fixed.py` | 对照修复版（结构相同，extend 前有容量守卫） |
+| `stream_processor_fixed.py` | 对照修复版（extend 前有容量守卫，单个超大 batch 分段处理） |
 | `buggy.spec.json` / `fixed.spec.json` | spec 字典示例，含新字段 `invariants` |
+| `run_demo_live.py` | 演示脚本（判断由外部大模型**实时**给出，经 `live/` 目录文件交换，跑真实 reasoner 管线） |
 | `run_demo_llm.py` | 演示脚本（大模型判断离线录入回放，跑真实 reasoner 管线） |
 | `run_demo.py` | 演示脚本（确定性规则替代判断，跑真实 reasoner 管线） |
-| `demo_output_llm.txt` / `demo_output.txt` | 两个脚本各自的一次真实运行输出（可直接截图进 PPT） |
+| `demo_output_live.txt` / `demo_output_llm.txt` / `demo_output.txt` | 三个脚本各自的一次真实运行输出（可直接截图进 PPT） |
 
 `*.spec.json` 的格式即管线生成的 sidecar 格式，新字段长这样：
 
@@ -42,7 +43,7 @@
 {
   "signature": "run_stream_processor(source, sink, metrics)",
   "pre_condition": "source 与 sink 已连接可用；……",
-  "post_condition": "正常运行期间不返回；仅在收到 shutdown 时退出循环，退出前 buffer 已排空……",
+  "post_condition": "正常运行期间不返回；仅在收到 shutdown 时退出循环，随后 flush 处理剩余元素……",
   "invariants": "任意时刻 len(buffer) <= CAPACITY（CAPACITY = 8），……"
 }
 ```
@@ -53,11 +54,13 @@
 请用 uv 或项目 venv）：
 
 ```bash
-uv run python docs/examples/invariants-demo/run_demo_llm.py   # 大模型判断版（推荐）
+uv run python docs/examples/invariants-demo/run_demo_llm.py   # 大模型判断版（回放，自包含）
 uv run python docs/examples/invariants-demo/run_demo.py       # 确定性规则版
+uv run python docs/examples/invariants-demo/run_demo_live.py  # 实时版：另需一个模型侧进程
+                                                              # 逐个应答 live/ 下的 request.json
 ```
 
-脚本会把 `GRANULARITY` monkeypatch 成 10，让 30+ 行的演示函数被真实切成 3 块，
+脚本会把 `GRANULARITY` monkeypatch 成 10，让 30+ 行的演示函数被真实切成多块，
 并打印每块的行号边界与逐块检查过程。
 
 ## 三个场景的预期输出
@@ -70,14 +73,17 @@ uv run python docs/examples/invariants-demo/run_demo.py       # 确定性规则�
   每块都过一遍不变式检查，块 2（`Line 11 ~ Line 20`）里 `buffer.extend(batch)`
   前无容量守卫 → 判定违反。最终 `status: MISMATCH`，违规条目带
   `kind=invariant`、触发语句 `Line 20: buffer.extend(batch)` 与原因。
-- **场景 C（after 对照）**：fixed 代码 + 同一份 spec。块 2 里检测到容量守卫
-  （`CAPACITY` / `flush`）→ 全部通过，最终 `status: MATCH`。
+- **场景 C（after 对照）**：fixed 代码 + 同一份 spec。修复版在 extend 前检查剩余容量、
+  空间不足时先 flush，单个超大 batch 分段处理 → 全部通过，最终 `status: MATCH`。
+  （第一版修复只做了容量守卫，被模型判定不完整——单个 batch 本身超过 CAPACITY 时
+  仍会超限；分段处理是后补的。）
 
-完整输出见 `demo_output_llm.txt`（大模型判断版）与 `demo_output.txt`（确定性规则版）。
+完整输出见 `demo_output_live.txt`（实时版）、`demo_output_llm.txt`（回放版）与
+`demo_output.txt`（确定性规则版）。
 
 ## 真实端到端验证指南（有 LLM key 的机器）
 
-上面的两个演示脚本都不接 API：判断要么由大模型离线给出后回放，要么由确定性规则代替。
+上面的三个演示脚本都不接 API：判断由大模型实时给出、离线回放，或由确定性规则代替。
 要在真实模型下端到端验证，找一台配好环境的机器：
 
 1. 配置 key（参考根 README 的 Configuration 一节）：

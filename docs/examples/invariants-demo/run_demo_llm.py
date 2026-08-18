@@ -70,20 +70,24 @@ JUDGMENTS = {
     },
     "fixed": {
         "posts": [
-            "初始化阶段：buffer 置为空列表，processed 与 dropped 计数器置 0，随后进入 while True "
-            "事件循环；此时 len(buffer) == 0，满足容量上限。",
-            "本轮迭代从 source 拉取一个 batch：若 batch 为 None 则跳过本轮；否则先比较 batch 长度与 "
-            "buffer 剩余容量，空间不足时先 flush 排空 buffer，再将 batch 并入并上报指标。"
-            "并入后 len(buffer) 不超过 CAPACITY。",
-            "若收到 shutdown 请求则跳出循环；否则逐条弹出 buffer 中的元素处理：heartbeat 类型跳过，"
-            "transform 抛 ValueError 时计入 dropped，其余结果写入 sink 并累加 processed；buffer 排空后"
-            "更新指标。退出循环时 flush(buffer, sink) 后隐式返回。段内 buffer 只减不增，段结束时 "
-            "len(buffer) == 0。",
+            "初始化 CAPACITY = 8 并定义函数；函数启动时 buffer 为空列表，"
+            "len(buffer) == 0，满足容量上限。",
+            "processed 与 dropped 置 0 后进入 while True 循环：每轮先上报 heartbeat，"
+            "再从 source 拉取 batch；batch 为 None 则跳过本轮、状态不变；batch 非 None "
+            "且其长度超过 buffer 剩余容量时，先 flush 排空 buffer。段结束时 buffer 要么"
+            "保持原状，要么已排空，len(buffer) <= CAPACITY 成立。",
+            "单个 batch 超过 CAPACITY 时，逐段切出至多 CAPACITY 条并入 buffer 并立即 "
+            "flush 排空，最后并入剩余部分；每次 extend 后 len(buffer) <= CAPACITY。"
+            "随后上报 buffer_len 指标；收到 shutdown 请求则跳出循环。",
+            "未 shutdown 时逐条弹出 buffer 中的元素处理：heartbeat 类型丢弃，transform 抛 "
+            "ValueError 时计入 dropped，其余结果写入 sink 并累加 processed；buffer 排空后"
+            "更新计数并继续下一轮。shutdown 路径在 break 后调用 flush(buffer, sink) 处理"
+            "剩余元素并隐式返回。段内 buffer 只减不增。",
         ],
         "invariant_checks": [
             (True, None, None),
-            # 段 2：守卫保证空间不足时先排空再并入；此处假设单次 batch 长度不超过 CAPACITY
-            # （由 source 侧约束），在此前提下并入后 len(buffer) <= CAPACITY 恒成立。
+            (True, None, None),
+            # 段 3：容量守卫加分段处理，两种路径下 extend 后都不超过 CAPACITY
             (True, None, None),
             (True, None, None),
         ],
@@ -238,8 +242,8 @@ def main():
         "stream_processor_fixed.py",
         fixed_spec,
         all_bugs=True,
-        note="修复版在 extend 前检查剩余容量并在空间不足时先 flush，"
-             "逐段不变式检查全部通过。",
+        note="修复版在 extend 前检查剩余容量、空间不足时先 flush，"
+             "单个超大 batch 分段处理；逐段不变式检查全部通过。",
     )
 
 

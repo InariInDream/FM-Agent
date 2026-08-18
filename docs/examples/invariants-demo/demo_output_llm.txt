@@ -53,21 +53,24 @@
 ============================================================================
 场景 C（after 对照）: fixed 代码 + 同一份含 invariants 的 spec
 ============================================================================
-  说明: 修复版在 extend 前检查剩余容量并在空间不足时先 flush，逐段不变式检查全部通过。
-  目标函数: stream_processor_fixed.py（36 行）
+  说明: 修复版在 extend 前检查剩余容量、空间不足时先 flush，单个超大 batch 分段处理；逐段不变式检查全部通过。
+  目标函数: stream_processor_fixed.py（43 行）
   spec 含 Invariants 段: 是
-  切块结果（GRANULARITY=10）：共 3 块
+  切块结果（GRANULARITY=10）：共 4 块
     块 1: Line 1 ~ Line 10（10 行）
     块 2: Line 11 ~ Line 20（10 行）
-    块 3: Line 21 ~ Line 36（16 行）
+    块 3: Line 21 ~ Line 30（10 行）
+    块 4: Line 31 ~ Line 43（13 行）
   --- 逐段检查过程（真实 reasoner 管线，判断来自大模型离线回放） ---
-    [块 1] 生成块后条件（大模型判断，离线回放）: 初始化阶段：buffer 置为空列表，processed 与 dropped 计数器置 0，随后进入 while True 事件循环；此时 len(buffer) == 0，满足容量上限。
+    [块 1] 生成块后条件（大模型判断，离线回放）: 初始化 CAPACITY = 8 并定义函数；函数启动时 buffer 为空列表，len(buffer) == 0，满足容量上限。
     [块 1] 不变式检查（大模型判断）→ 保持 MATCH
-    [块 2] 生成块后条件（大模型判断，离线回放）: 本轮迭代从 source 拉取一个 batch：若 batch 为 None 则跳过本轮；否则先比较 batch 长度与 buffer 剩余容量，空间不足时先 flush 排空 buffer，再将 batch 并入并上报指标。并入后 len(buffer) 不超过 CAPACITY。
+    [块 2] 生成块后条件（大模型判断，离线回放）: processed 与 dropped 置 0 后进入 while True 循环：每轮先上报 heartbeat，再从 source 拉取 batch；batch 为 None 则跳过本轮、状态不变；batch 非 None 且其长度超过 buffer 剩余容量时，先 flush 排空 buffer。段结束时 buffer 要么保持原状，要么已排空，len(buffer) <= CAPACITY 成立。
     [块 2] 不变式检查（大模型判断）→ 保持 MATCH
-    [块 3] 生成块后条件（大模型判断，离线回放）: 若收到 shutdown 请求则跳出循环；否则逐条弹出 buffer 中的元素处理：heartbeat 类型跳过，transform 抛 ValueError 时计入 dropped，其余结果写入 sink 并累加 processed；buffer 排空后更新指标。退出循环时 flush(buffer, sink) 后隐式返回。段内 buffer 只减不增，段结束时 len(buffer) == 0。
-    [块 3] 后条件对照 spec（大模型判断）→ MATCH
+    [块 3] 生成块后条件（大模型判断，离线回放）: 单个 batch 超过 CAPACITY 时，逐段切出至多 CAPACITY 条并入 buffer 并立即 flush 排空，最后并入剩余部分；每次 extend 后 len(buffer) <= CAPACITY。随后上报 buffer_len 指标；收到 shutdown 请求则跳出循环。
     [块 3] 不变式检查（大模型判断）→ 保持 MATCH
+    [块 4] 生成块后条件（大模型判断，离线回放）: 未 shutdown 时逐条弹出 buffer 中的元素处理：heartbeat 类型丢弃，transform 抛 ValueError 时计入 dropped，其余结果写入 sink 并累加 processed；buffer 排空后更新计数并继续下一轮。shutdown 路径在 break 后调用 flush(buffer, sink) 处理剩余元素并隐式返回。段内 buffer 只减不增。
+    [块 4] 后条件对照 spec（大模型判断）→ MATCH
+    [块 4] 不变式检查（大模型判断）→ 保持 MATCH
   --- 结果 ---
   最终状态: MATCH
 

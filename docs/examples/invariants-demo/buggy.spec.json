@@ -1,6 +1,6 @@
 {
   "signature": "run_stream_processor(source, sink, metrics)",
   "pre_condition": "source 与 sink 已连接可用；metrics 已初始化；常量 CAPACITY = 8 是 buffer 的容量上限；函数启动时 buffer 为空",
-  "post_condition": "正常运行期间不返回（while True 事件循环）；仅在收到 shutdown 请求时退出循环，退出前 buffer 已排空并 flush 到 sink，然后隐式返回",
+  "post_condition": "正常运行期间不返回（while True 事件循环）；仅在收到 shutdown 请求时退出循环，随后调用 flush(buffer, sink) 处理 buffer 中的剩余元素，然后隐式返回",
   "invariants": "任意时刻 len(buffer) <= CAPACITY（CAPACITY = 8），即 buffer 中未处理元素的数量永不超过容量上限，包括每次 extend/append 之后的瞬时状态"
 }
