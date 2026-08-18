@@ -1,15 +1,16 @@
 # 不变式（Invariants）推理 before/after 演示包
 
-面向组会投屏的确定性演示：展示 `feature/spec-invariants` 分支为 spec 新增的可选
+面向组会投屏的演示：展示 `feature/spec-invariants` 分支为 spec 新增的可选
 `invariants` 字段，以及 reasoner 对**连续 / 不终止行为**（`while True` 事件循环这类
 "永不 return" 的函数）的逐块不变式检查能力。
 
 > **重要说明 / NOTE**
-> 本机演示中三次 LLM 调用（生成块后条件、后条件蕴含检查、不变式保持检查）全部由
-> **确定性桩**替代；切块、pre/post 逐块传播、逐块不变式检查、违规汇总走的都是
-> `src/reasoner.py` 的**真实管线代码**。演示的是机制链路；判断质量仍取决于真实模型。
-> （LLM judgments are stubbed deterministically; the demo shows the mechanism,
-> not model quality.）
+> 本目录有两个演示脚本，区别只在"判断从哪来"，管线都是 `src/reasoner.py` 的真实代码：
+>
+> - `run_demo_llm.py`（推荐用于汇报）：三处需要模型判断的环节（生成块后条件、
+>   后条件对照 spec、逐块不变式检查），判断内容由大模型真实阅读演示代码后给出、
+>   离线录入回放，**无需 API key**。
+> - `run_demo.py`：判断由确定性规则替代，用于无模型环境下核对管线行为。
 
 ## 演示目标
 
@@ -31,8 +32,9 @@
 | `stream_processor.py` | 演示目标（buggy 版，37 行） |
 | `stream_processor_fixed.py` | 对照修复版（结构相同，extend 前有容量守卫） |
 | `buggy.spec.json` / `fixed.spec.json` | spec 字典示例，含新字段 `invariants` |
-| `run_demo.py` | 演示脚本（桩替换三次 LLM 调用，跑真实 reasoner 管线） |
-| `demo_output.txt` | 本脚本的一次真实运行输出（可直接截图进 PPT） |
+| `run_demo_llm.py` | 演示脚本（大模型判断离线录入回放，跑真实 reasoner 管线） |
+| `run_demo.py` | 演示脚本（确定性规则替代判断，跑真实 reasoner 管线） |
+| `demo_output_llm.txt` / `demo_output.txt` | 两个脚本各自的一次真实运行输出（可直接截图进 PPT） |
 
 `*.spec.json` 的格式即管线生成的 sidecar 格式，新字段长这样：
 
@@ -51,13 +53,12 @@
 请用 uv 或项目 venv）：
 
 ```bash
-uv run python docs/examples/invariants-demo/run_demo.py
-# 或
-.venv/bin/python docs/examples/invariants-demo/run_demo.py
+uv run python docs/examples/invariants-demo/run_demo_llm.py   # 大模型判断版（推荐）
+uv run python docs/examples/invariants-demo/run_demo.py       # 确定性规则版
 ```
 
 脚本会把 `GRANULARITY` monkeypatch 成 10，让 30+ 行的演示函数被真实切成 3 块，
-并打印每块的行号边界与逐块检查序列。
+并打印每块的行号边界与逐块检查过程。
 
 ## 三个场景的预期输出
 
@@ -72,12 +73,12 @@ uv run python docs/examples/invariants-demo/run_demo.py
 - **场景 C（after 对照）**：fixed 代码 + 同一份 spec。块 2 里检测到容量守卫
   （`CAPACITY` / `flush`）→ 全部通过，最终 `status: MATCH`。
 
-完整输出见 `demo_output.txt`。
+完整输出见 `demo_output_llm.txt`（大模型判断版）与 `demo_output.txt`（确定性规则版）。
 
 ## 真实端到端验证指南（有 LLM key 的机器）
 
-本机没有 LLM API key 和 opencode，上面的演示用桩替代了模型判断。要在真实模型下
-端到端验证，找一台配好环境的机器：
+上面的两个演示脚本都不接 API：判断要么由大模型离线给出后回放，要么由确定性规则代替。
+要在真实模型下端到端验证，找一台配好环境的机器：
 
 1. 配置 key（参考根 README 的 Configuration 一节）：
 
