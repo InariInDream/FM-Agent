@@ -1,0 +1,108 @@
+****************************************************************************
+  资源/时序约定检查 before/after 演示 —— task_worker（cache 有界性 + 锁顺序）
+  模型判断由外部大模型实时给出（经 live/ 文件交换，无需 API key）。
+****************************************************************************
+
+============================================================================
+场景 A（before）: buggy 代码 + 不含 resources/ordering 的旧式 spec
+============================================================================
+  说明: 旧式 spec 没有资源/时序约定段，reasoner 只做后条件对照；该函数没有显式 return，锁顺序相反和 cache 无界增长两个 bug 完全不可见。
+  目标函数: task_worker.py（30 行）
+  spec 含 Resource-contracts 段: 否，含 Ordering-constraints 段: 否
+  切块结果（GRANULARITY=10）：共 2 块
+    块 1: Line 1 ~ Line 10（10 行）
+    块 2: Line 11 ~ Line 30（20 行）
+  --- 逐段检查过程（真实管线，模型实时应答） ---
+    [块 1] 请求模型生成块后条件
+    >>> 等待模型应答（call 1, post_condition）...
+    [块 1] 模型给出的后条件: 该代码段只是模块文档字符串，不产生任何副作用；执行后所有状态保持不变：queue、pool、lock_a、lock_b 仍然初始化可用，cache 仍为空 dict，MAX_CACHE 仍为 64。
+    [块 2] 请求模型生成块后条件
+    >>> 等待模型应答（call 2, post_condition）...
+    [块 2] 模型给出的后条件: MAX_CACHE 被赋值为 64，函数 run_task_worker 被定义但尚未调用，因此 queue、pool、lock_a、lock_b、cache 的状态不变（cache 仍为空 dict）；若函数被调用，则进入 while True 事件循环：task 为 None 时直接进入下一轮迭代；fast 路径先 lock_a 后 lock_b 并把 buf 写入 cache（不淘汰、不释放）；slow 路径先 lock_b 后 lock_a 执行 record(aggregate(cache)) 后 pool.release(buf)；循环正常执行时不返回。
+    [块 2] 请求模型做后条件对照
+    >>> 等待模型应答（call 3, post_implies_spec）...
+    [块 2] 模型判定: MATCH
+  --- 结果 ---
+  返回值（非 all_bugs 模式的字符串结果）:
+    The function passes the verification. All code blocks satisfy the specification's post-condition.
+
+============================================================================
+场景 B（after）: buggy 代码 + 含 resources/ordering 的 spec
+============================================================================
+  说明: spec 声明两类约定后，每段代码都要过一遍资源检查（cache 是否有界、缓冲区是否有归宿）和时序检查（锁获取顺序）；all_bugs=True 汇总全部违规，预期报出两处。
+  目标函数: task_worker.py（30 行）
+  spec 含 Resource-contracts 段: 是，含 Ordering-constraints 段: 是
+  切块结果（GRANULARITY=10）：共 2 块
+    块 1: Line 1 ~ Line 10（10 行）
+    块 2: Line 11 ~ Line 30（20 行）
+  --- 逐段检查过程（真实管线，模型实时应答） ---
+    [块 1] 请求模型生成块后条件
+    >>> 等待模型应答（call 4, post_condition）...
+    [块 1] 模型给出的后条件: 该代码段只是模块文档字符串，不产生任何副作用；执行后所有状态保持不变：queue、pool、lock_a、lock_b 仍然初始化可用，cache 仍为空 dict，MAX_CACHE 仍为 64。
+    [块 1] 请求模型做resources检查
+    >>> 等待模型应答（call 5, property_check）...
+    [块 1] 模型判定: 通过 MATCH
+    [块 1] 请求模型做ordering检查
+    >>> 等待模型应答（call 6, property_check）...
+    [块 1] 模型判定: 通过 MATCH
+    [块 2] 请求模型生成块后条件
+    >>> 等待模型应答（call 7, post_condition）...
+    [块 2] 模型给出的后条件: MAX_CACHE 被赋值为 64，函数 run_task_worker 被定义但尚未调用，queue、pool、lock_a、lock_b、cache 的状态不变（cache 仍为空 dict）；若函数被调用则进入 while True 循环：task 为 None 时 continue 进入下一轮；fast 路径先 lock_a 后 lock_b，将 buf 以 task["id"] 为键写入 cache，buf 不移交释放；slow 路径先 lock_b 后 lock_a，执行 record(aggregate(cache)) 后 pool.release(buf)；循环正常运行时不返回。
+    [块 2] 请求模型做后条件对照
+    >>> 等待模型应答（call 8, post_implies_spec）...
+    [块 2] 模型判定: MATCH
+    [块 2] 请求模型做resources检查
+    >>> 等待模型应答（call 9, property_check）...
+    [块 2] 模型判定: 违反 MISMATCH
+    [块 2] 请求模型做ordering检查
+    >>> 等待模型应答（call 10, property_check）...
+    [块 2] 模型判定: 违反 MISMATCH
+  --- 结果 ---
+  最终状态: MISMATCH
+  违规汇总（all_bugs 模式，共 2 处）:
+    - kind = resource
+      触发语句:
+        Line 18:         buf = pool.acquire()
+        Line 24:                     cache[task["id"]] = buf
+      原因: fast 路径把 acquire 来的 buf 直接写入 cache，全程没有容量检查或淘汰逻辑，也不再 release。反例：连续到达 65 个 prio 为 fast 且 id 互不相同的任务，cache 条目数就会增长到 65，超过 MAX_CACHE=64，缓冲区随运行时间无界累积。
+    - kind = ordering
+      触发语句:
+        Line 27:             with lock_b:
+        Line 28:                 with lock_a:
+      原因: slow 路径（else 分支）先获取 lock_b 再获取 lock_a，顺序与约定相反。反例：任务 prio 不是 fast 时执行到 Line 27-28，先持有 lock_b 再等 lock_a；若此时另一线程按 fast 路径先持有 lock_a 再等 lock_b，两线程互等形成 ABBA 死锁。
+
+============================================================================
+场景 C（after 对照）: fixed 代码 + 同一份完整 spec
+============================================================================
+  说明: 修复版统一先 lock_a 后 lock_b，cache 写满时淘汰最旧条目并释放其缓冲区；逐段约定检查应全部通过。
+  目标函数: task_worker_fixed.py（30 行）
+  spec 含 Resource-contracts 段: 是，含 Ordering-constraints 段: 是
+  切块结果（GRANULARITY=10）：共 2 块
+    块 1: Line 1 ~ Line 10（10 行）
+    块 2: Line 11 ~ Line 30（20 行）
+  --- 逐段检查过程（真实管线，模型实时应答） ---
+    [块 1] 请求模型生成块后条件
+    >>> 等待模型应答（call 11, post_condition）...
+    [块 1] 模型给出的后条件: 文档字符串无副作用；MAX_CACHE 被赋值为 64；函数 run_task_worker 被定义但尚未调用，queue、pool、lock_a、lock_b、cache 状态不变（cache 仍为空 dict）；若函数被调用则进入 while True 循环，正常运行期间不返回。
+    [块 1] 请求模型做resources检查
+    >>> 等待模型应答（call 12, property_check）...
+    [块 1] 模型判定: 通过 MATCH
+    [块 1] 请求模型做ordering检查
+    >>> 等待模型应答（call 13, property_check）...
+    [块 1] 模型判定: 通过 MATCH
+    [块 2] 请求模型生成块后条件
+    >>> 等待模型应答（call 14, post_condition）...
+    [块 2] 模型给出的后条件: 每次迭代从 queue 取出一个任务：task 为 None 时 continue 进入下一轮，状态不变；否则 acquire 一个 buf 并 fill。fast 路径先 lock_a 后 lock_b，若 len(cache) >= MAX_CACHE 则弹出最旧条目并 release 其缓冲区，再把 buf 写入 cache，迭代结束时 len(cache) <= MAX_CACHE 且 buf 移交 cache；slow 路径先 lock_a 后 lock_b，执行 record(aggregate(cache)) 后 pool.release(buf)，buf 被释放。两条路径锁的获取顺序都是先 A 后 B，循环继续下一轮，不返回。
+    [块 2] 请求模型做后条件对照
+    >>> 等待模型应答（call 15, post_implies_spec）...
+    [块 2] 模型判定: MATCH
+    [块 2] 请求模型做resources检查
+    >>> 等待模型应答（call 16, property_check）...
+    [块 2] 模型判定: 通过 MATCH
+    [块 2] 请求模型做ordering检查
+    >>> 等待模型应答（call 17, property_check）...
+    [块 2] 模型判定: 通过 MATCH
+  --- 结果 ---
+  最终状态: MATCH
+
+全部场景完成。
