@@ -34,6 +34,12 @@ def format_spec_for_reasoner(spec):
     invariants = spec.get('invariants')
     if invariants:
         text += f"\n\nInvariants:\n{invariants}"
+    resources = spec.get('resources')
+    if resources:
+        text += f"\n\nResource-contracts:\n{resources}"
+    ordering = spec.get('ordering')
+    if ordering:
+        text += f"\n\nOrdering-constraints:\n{ordering}"
     return text
 
 

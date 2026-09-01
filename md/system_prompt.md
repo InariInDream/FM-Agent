@@ -72,7 +72,9 @@ source file.
   "signature": "<FunctionName>(<params>) -> <ReturnType>",
   "pre_condition": "<what must hold before the call>",
   "post_condition": "<what the function guarantees after return>",
-  "invariants": "<optional: properties that must hold continuously while the function runs>"
+  "invariants": "<optional: properties that must hold continuously while the function runs>",
+  "resources": "<optional: resource/memory contracts — every acquisition is released on all paths, no leaks, no use-after-release>",
+  "ordering": "<optional: required ordering between named operations/events, e.g. lock held before shared-state access>"
 }
 ```
 
@@ -82,6 +84,16 @@ invariants are the primary contract: properties that must hold on every loop
 iteration or event-handling cycle, and `post_condition` only describes the
 return paths that actually exist. Ordinary terminating functions do not need
 `invariants`.
+
+`resources` is optional and only needed for functions with resource/memory
+concerns: it states that every acquisition (memory, lock, handle, connection)
+has a matching release on all paths, that nothing accumulates without bound
+across loop iterations, and that nothing is used after release.
+
+`ordering` is optional and only needed when the function must respect an
+ordering between named operations or events (for example, accessing shared
+state only while holding a lock, or acquiring two locks in a fixed order).
+Ordinary functions need none of the three optional fields.
 
 **`<function-file>.info.json`** — the expected specs of the function's callees:
 

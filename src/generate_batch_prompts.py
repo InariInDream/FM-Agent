@@ -354,6 +354,20 @@ def build_prompt(
         "long-running functions (event loops, server accept loops, stream "
         "processing, retry loops); ordinary terminating functions omit it."
     )
+    lines.append(
+        "Optional field: `\"resources\": \"...\"` — resource/memory contracts: "
+        "every acquisition (memory, lock, handle, connection) is released on "
+        "all paths, nothing accumulates without bound across loop iterations, "
+        "nothing is used after release. Add it only for functions with "
+        "resource/memory concerns."
+    )
+    lines.append(
+        "Optional field: `\"ordering\": \"...\"` — required ordering between "
+        "named operations/events (e.g. shared state accessed only while "
+        "holding the lock; two locks acquired in a fixed order). Add it only "
+        "when such ordering matters. Ordinary functions need none of the "
+        "three optional fields."
+    )
     lines.append("")
     lines.append("`<function-file>.info.json`:")
     lines.append("```json")

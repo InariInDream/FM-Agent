@@ -106,9 +106,18 @@ def toy_check_block_preserves_invariants(block, pre_condition, invariants,
 
 
 # 用桩替换 src.reasoner 命名空间里的三次 LLM 调用（与 tests/test_reasoner.py 同款手法）
+def toy_check_block_property(block, pre_condition, property_kind, contract_text,
+                             info, language, trace_dir=None, trace_meta=None):
+    # 本 demo 的 spec 只声明 invariants，属性检查统一走 _check_block_property。
+    assert property_kind == "invariants"
+    return toy_check_block_preserves_invariants(
+        block, pre_condition, contract_text, info, language,
+        trace_dir=trace_dir, trace_meta=trace_meta)
+
+
 reasoner_mod._generate_block_post_condition = fake_generate_block_post_condition
 reasoner_mod._check_post_implies_spec = fake_check_post_implies_spec
-reasoner_mod._check_block_preserves_invariants = toy_check_block_preserves_invariants
+reasoner_mod._check_block_property = toy_check_block_property
 
 
 # ---------------------------------------------------------------------------

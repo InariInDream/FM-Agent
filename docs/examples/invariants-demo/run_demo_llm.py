@@ -129,10 +129,19 @@ def llm_check_block_preserves_invariants(block, pre_condition, invariants,
     return passed, stmts, reason
 
 
-# 替换 src.reasoner 命名空间里的三处模型调用
+# 替换 src.reasoner 命名空间里的三处模型调用（属性检查统一走 _check_block_property，
+# 本 demo 的 spec 只声明 invariants）
+def llm_check_block_property(block, pre_condition, property_kind, contract_text,
+                             info, language, trace_dir=None, trace_meta=None):
+    assert property_kind == "invariants"
+    return llm_check_block_preserves_invariants(
+        block, pre_condition, contract_text, info, language,
+        trace_dir=trace_dir, trace_meta=trace_meta)
+
+
 reasoner_mod._generate_block_post_condition = llm_generate_block_post_condition
 reasoner_mod._check_post_implies_spec = llm_check_post_implies_spec
-reasoner_mod._check_block_preserves_invariants = llm_check_block_preserves_invariants
+reasoner_mod._check_block_property = llm_check_block_property
 
 
 # ---------------------------------------------------------------------------

@@ -73,10 +73,11 @@ def collect_file_names(input_dir, output_path="file_list.json"):
 
 
 def _is_valid_spec_json(data):
-    """Check that .spec.json contains the required fields plus optional invariants."""
+    """Check that .spec.json contains the required fields plus optional property fields."""
     if not isinstance(data, dict):
         return False
-    if not _SPEC_FIELDS.issubset(data) or not set(data).issubset(_SPEC_FIELDS | {"invariants"}):
+    if not _SPEC_FIELDS.issubset(data) or not set(data).issubset(
+            _SPEC_FIELDS | {"invariants", "resources", "ordering"}):
         return False
     return all(isinstance(value, str) for value in data.values())
 

@@ -102,6 +102,28 @@ class TestIsValidSpecJson:
         spec["invariants"] = ["queue size <= capacity"]
         assert _is_valid_spec_json(spec) is False
 
+    def test_optional_resources_and_ordering_accepted(self):
+        spec = _valid_spec()
+        spec["resources"] = "every allocation is freed on all paths"
+        spec["ordering"] = "lock A acquired before lock B"
+        assert _is_valid_spec_json(spec) is True
+
+    def test_empty_resources_and_ordering_accepted(self):
+        spec = _valid_spec()
+        spec["resources"] = ""
+        spec["ordering"] = ""
+        assert _is_valid_spec_json(spec) is True
+
+    def test_non_string_resources_rejected(self):
+        spec = _valid_spec()
+        spec["resources"] = {"rule": "no leaks"}
+        assert _is_valid_spec_json(spec) is False
+
+    def test_non_string_ordering_rejected(self):
+        spec = _valid_spec()
+        spec["ordering"] = ["A before B"]
+        assert _is_valid_spec_json(spec) is False
+
     def test_unknown_field_still_rejected(self):
         spec = _valid_spec()
         spec["extra"] = "nope"

@@ -4,7 +4,7 @@ from .languages.registry import split_blocks_for_function
 from .prompts import (
     _generate_block_post_condition,
     _check_post_implies_spec,
-    _check_block_preserves_invariants,
+    _check_block_property,
 )
 
 
@@ -190,21 +190,46 @@ def _has_terminating_statement(block, language):
     return re.search(pattern, block) is not None
 
 
+# Optional property sections, in the fixed order in which they appear in the
+# reasoner-facing spec text (see src.parser.format_spec_for_reasoner).
+_PROPERTY_SECTIONS = [
+    ("invariants", "Invariants"),
+    ("resources", "Resource-contracts"),
+    ("ordering", "Ordering-constraints"),
+]
+
+# Violation kind reported for each property section.
+_PROPERTY_VIOLATION_KINDS = {
+    "invariants": "invariant",
+    "resources": "resource",
+    "ordering": "ordering",
+}
+
+
 def _parse_spec_conditions(spec):
     pre_match = re.search(r'Pre-condition:\s*\n(.*?)(?=\nPost-condition:|\Z)', spec, re.DOTALL)
-    post_match = re.search(r'Post-condition:\s*\n(.*?)(?=\nInvariants:|\Z)', spec, re.DOTALL)
-    inv_match = re.search(r'\nInvariants:\s*\n(.*)\Z', spec, re.DOTALL)
+    post_markers = "|".join(rf"\n{label}:" for _, label in _PROPERTY_SECTIONS)
+    post_match = re.search(rf'Post-condition:\s*\n(.*?)(?={post_markers}|\Z)', spec, re.DOTALL)
     pre = pre_match.group(1).strip() if pre_match else None
     post = post_match.group(1).strip() if post_match else None
-    invariants = inv_match.group(1).strip() if inv_match else None
-    return pre, post, invariants
+    properties = {}
+    for idx, (key, label) in enumerate(_PROPERTY_SECTIONS):
+        next_markers = "|".join(
+            rf"\n{next_label}:" for _, next_label in _PROPERTY_SECTIONS[idx + 1:]
+        )
+        lookahead = rf"(?={next_markers}|\Z)" if next_markers else r"\Z"
+        match = re.search(rf'\n{label}:\s*\n(.*?){lookahead}', spec, re.DOTALL)
+        if match:
+            properties[key] = match.group(1).strip()
+    return pre, post, properties
 
 
 def reasoner(func, spec, info, language, trace_context=None, all_bugs=False):
     trace_context = trace_context or {}
     trace_dir = trace_context.get("trace_dir")
-    # Step 1: Parse pre-condition, post-condition, and optional invariants from spec
-    pre_condition, spec_post_condition, invariants = _parse_spec_conditions(spec)
+    # Step 1: Parse pre-condition, post-condition, and optional property
+    # sections (invariants/resources/ordering) from spec
+    pre_condition, spec_post_condition, properties = _parse_spec_conditions(spec)
     if not pre_condition or not spec_post_condition:
         error = "Failed to parse pre/post conditions from the spec."
         if all_bugs:
@@ -321,15 +346,21 @@ def reasoner(func, spec, info, language, trace_context=None, all_bugs=False):
                         f"Reason for violation:\n{reason}"
                     )
 
-        # When the spec declares invariants, every block must preserve them at
-        # all times while running (not just at its exit point).
-        if invariants:
+        # For each declared property (invariants, resources, ordering), every
+        # block must satisfy it at all times while running (not just at its
+        # exit point).
+        for property_key, property_label in _PROPERTY_SECTIONS:
+            contract_text = properties.get(property_key)
+            if not contract_text:
+                continue
+            violation_kind = _PROPERTY_VIOLATION_KINDS[property_key]
             if all_bugs:
                 try:
-                    inv_passed, inv_stmts, inv_reason = _check_block_preserves_invariants(
+                    prop_passed, prop_stmts, prop_reason = _check_block_property(
                         block,
                         current_pre,
-                        invariants,
+                        property_key,
+                        contract_text,
                         info,
                         language,
                         trace_dir=trace_dir,
@@ -340,35 +371,36 @@ def reasoner(func, spec, info, language, trace_context=None, all_bugs=False):
                         "status": "ERROR",
                         "violations": violations,
                         "error": (
-                            "Failed to check invariants against the "
+                            f"Failed to check {property_key} against the "
                             f"specification for block {i+1}: {exc}"
                         ),
                         "reasoning_complete": False,
                     }
             else:
-                inv_passed, inv_stmts, inv_reason = _check_block_preserves_invariants(
+                prop_passed, prop_stmts, prop_reason = _check_block_property(
                     block,
                     current_pre,
-                    invariants,
+                    property_key,
+                    contract_text,
                     info,
                     language,
                     trace_dir=trace_dir,
                     trace_meta=trace_meta,
                 )
-            if not inv_passed:
+            if not prop_passed:
                 if all_bugs:
                     violations.append({
-                        "kind": "invariant",
-                        "statements": inv_stmts,
+                        "kind": violation_kind,
+                        "statements": prop_stmts,
                         "post_condition": None,
-                        "reason": inv_reason,
+                        "reason": prop_reason,
                     })
                 else:
                     return (
                         f"Verification FAILED.\n"
-                        f"Statements triggering the invariant violation:\n{inv_stmts}\n\n"
-                        f"Invariants:\n{invariants}\n\n"
-                        f"Reason for violation:\n{inv_reason}"
+                        f"Statements triggering the {violation_kind} violation:\n{prop_stmts}\n\n"
+                        f"{property_label}:\n{contract_text}\n\n"
+                        f"Reason for violation:\n{prop_reason}"
                     )
 
         # Use current block's post-condition as next block's pre-condition

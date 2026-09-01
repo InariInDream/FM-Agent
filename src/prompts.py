@@ -372,12 +372,12 @@ def _check_post_implies_spec(block, post_condition, spec_post_condition, knowled
     raise ValueError("Could not parse a valid structured JSON verdict from spec-check response.")
 
 
-def _check_block_preserves_invariants(block, pre_condition, invariants, knowledge, language,
-                                      trace_dir=None, trace_meta=None):
+def _check_block_property(block, pre_condition, property_kind, contract_text,
+                          knowledge, language, trace_dir=None, trace_meta=None):
     info_str = f"\nAdditional context:\n{knowledge}" if knowledge else ""
     lang_expertise = _LANGUAGE_EXPERTISE.get(language.lower(), f"You are an expert in logic, formal verification, and {language} programming. ")
-    messages = [
-        {"role": "system", "content": (
+    if property_kind == "invariants":
+        system_content = (
             lang_expertise +
             "Given a code block, its entry condition (which includes the fact that the specification invariants hold just before the block runs), "
             "and a set of specification invariants, determine whether there exists a concrete execution in which the block, at ANY moment while it runs "
@@ -394,18 +394,86 @@ def _check_block_preserves_invariants(block, pre_condition, invariants, knowledg
             "For MISMATCH, counterexample, offending_statements, and reason must be non-empty strings; "
             "offending_statements must preserve any 'Line N:' prefixes from the code block. "
             "For MATCH, counterexample and offending_statements must be null or empty, and reason may be empty."
-        )},
-        {"role": "user", "content": (
+        )
+        user_content = (
             f"Programming language: {language}\n\n"
             f"Code block:\n```{language.lower()}\n{block}\n```\n\n"
             f"Entry condition (holds when the block starts; the invariants hold just before entry):\n{pre_condition}\n\n"
-            f"Specification invariants (must hold at all times while the block runs):\n{invariants}\n"
+            f"Specification invariants (must hold at all times while the block runs):\n{contract_text}\n"
             f"{info_str}\n"
             "Is there a concrete execution in which the block violates any invariant at any moment while it runs, "
             "including in the middle of a loop iteration or event-handling cycle? "
             "Check each invariant against each statement and each execution path. "
             "Provide a specific counterexample if any invariant can be broken. Return only the JSON object."
-        )}
+        )
+        summary = "Checked whether the block preserves the spec invariants"
+    elif property_kind == "resources":
+        system_content = (
+            lang_expertise +
+            "Given a code block, its entry condition, and a set of resource contracts (memory, locks, handles, connections, etc.), "
+            "determine whether there exists a concrete execution of the block that violates any resource contract: "
+            "an acquisition without a matching release on some path, unbounded accumulation across loop iterations (a leak), "
+            "or a use of a resource after it has been released. "
+            "Focus on finding CONCRETE COUNTEREXAMPLES: a specific state and execution path where a resource is leaked, "
+            "accumulated without bound, or used after release. "
+            "For each potential violation, construct a specific scenario, trace what the block does step by step, "
+            "and check whether every resource contract still holds on every path.\n"
+            "Return only a valid JSON object. Do not include markdown, tags, or prose. "
+            "Use exactly this schema: "
+            "{\"verdict\": \"MATCH|MISMATCH\", \"counterexample\": string|null, "
+            "\"offending_statements\": string|null, \"reason\": string}. "
+            "For MISMATCH, counterexample, offending_statements, and reason must be non-empty strings; "
+            "offending_statements must preserve any 'Line N:' prefixes from the code block. "
+            "For MATCH, counterexample and offending_statements must be null or empty, and reason may be empty."
+        )
+        user_content = (
+            f"Programming language: {language}\n\n"
+            f"Code block:\n```{language.lower()}\n{block}\n```\n\n"
+            f"Entry condition (holds when the block starts):\n{pre_condition}\n\n"
+            f"Resource contracts (must hold on every path through the block):\n{contract_text}\n"
+            f"{info_str}\n"
+            "Is there a concrete execution in which the block acquires a resource without a matching release on some path, "
+            "accumulates resources without bound across loop iterations, or uses a resource after releasing it? "
+            "Check each resource contract against each statement and each execution path. "
+            "Provide a specific counterexample if any contract can be broken. Return only the JSON object."
+        )
+        summary = "Checked whether the block satisfies the spec resource contracts"
+    elif property_kind == "ordering":
+        system_content = (
+            lang_expertise +
+            "Given a code block, its entry condition, and a set of ordering constraints on named operations/events "
+            "(e.g. 'shared state is only accessed while holding the lock', 'lock A is always acquired before lock B'), "
+            "determine whether there exists a concrete execution of the block that violates any declared ordering constraint. "
+            "Focus on finding CONCRETE COUNTEREXAMPLES: a specific execution path through the block on which two named "
+            "operations/events occur in a forbidden order or a required predecessor is missing. "
+            "For each potential violation, construct a specific scenario, trace what the block does step by step, "
+            "and check whether every ordering constraint holds on every path.\n"
+            "Return only a valid JSON object. Do not include markdown, tags, or prose. "
+            "Use exactly this schema: "
+            "{\"verdict\": \"MATCH|MISMATCH\", \"counterexample\": string|null, "
+            "\"offending_statements\": string|null, \"reason\": string}. "
+            "For MISMATCH, counterexample, offending_statements, and reason must be non-empty strings; "
+            "offending_statements must preserve any 'Line N:' prefixes from the code block. "
+            "For MATCH, counterexample and offending_statements must be null or empty, and reason may be empty."
+        )
+        user_content = (
+            f"Programming language: {language}\n\n"
+            f"Code block:\n```{language.lower()}\n{block}\n```\n\n"
+            f"Entry condition (holds when the block starts):\n{pre_condition}\n\n"
+            f"Ordering constraints (must hold on every path through the block):\n{contract_text}\n"
+            f"{info_str}\n"
+            "Is there a concrete execution path on which the block violates any declared ordering constraint between "
+            "named operations or events? "
+            "Check each ordering constraint against each statement and each execution path. "
+            "Provide the specific violating path if any constraint can be broken. Return only the JSON object."
+        )
+        summary = "Checked whether the block satisfies the spec ordering constraints"
+    else:
+        raise ValueError(f"Unknown property kind: {property_kind}")
+    purpose = f"check_block_{property_kind}"
+    messages = [
+        {"role": "system", "content": system_content},
+        {"role": "user", "content": user_content},
     ]
     trace_meta = trace_meta or {}
     for attempt in range(1, MAX_SPC_ITER + 1):
@@ -423,10 +491,10 @@ def _check_block_preserves_invariants(block, pre_condition, invariants, knowledg
                 "status": "error",
                 "start_time": started,
                 "end_time": utc_now_iso(),
-                "summary": f"LLM invariant-preservation check failed: {exc}",
+                "summary": f"LLM {property_kind} check failed: {exc}",
                 "metadata": {
                     **trace_meta,
-                    "purpose": "check_block_preserves_invariants",
+                    "purpose": purpose,
                     "model": REASONER_SPEC_CHECK_MODEL,
                     "attempt": attempt,
                     "error": str(exc),
@@ -451,10 +519,10 @@ def _check_block_preserves_invariants(block, pre_condition, invariants, knowledg
             "status": status,
             "start_time": started,
             "end_time": utc_now_iso(),
-            "summary": "Checked whether the block preserves the spec invariants",
+            "summary": summary,
             "metadata": {
                 **trace_meta,
-                "purpose": "check_block_preserves_invariants",
+                "purpose": purpose,
                 "model": REASONER_SPEC_CHECK_MODEL,
                 "attempt": attempt,
                 "usage": usage,
@@ -485,4 +553,12 @@ def _check_block_preserves_invariants(block, pre_condition, invariants, knowledg
                 ),
             }
         ]
-    raise ValueError("Could not parse a valid structured JSON verdict from invariant-check response.")
+    raise ValueError(f"Could not parse a valid structured JSON verdict from {property_kind}-check response.")
+
+
+def _check_block_preserves_invariants(block, pre_condition, invariants, knowledge, language,
+                                      trace_dir=None, trace_meta=None):
+    return _check_block_property(
+        block, pre_condition, "invariants", invariants, knowledge, language,
+        trace_dir=trace_dir, trace_meta=trace_meta,
+    )

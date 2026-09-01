@@ -133,25 +133,25 @@ class TestParseSpecConditions:
             "Post-condition:\n"
             "  result >= x\n"
         )
-        pre, post, invariants = _parse_spec_conditions(spec)
+        pre, post, properties = _parse_spec_conditions(spec)
         assert pre == "x > 0\n  y != null"
         assert post == "result >= x"
-        assert invariants is None
+        assert properties == {}
 
     def test_missing_markers_return_none(self):
-        assert _parse_spec_conditions("no markers here") == (None, None, None)
+        assert _parse_spec_conditions("no markers here") == (None, None, {})
 
     def test_post_without_pre(self):
-        pre, post, invariants = _parse_spec_conditions("Post-condition:\n  done")
+        pre, post, properties = _parse_spec_conditions("Post-condition:\n  done")
         assert pre is None
         assert post == "done"
-        assert invariants is None
+        assert properties == {}
 
     def test_pre_runs_to_end_without_post(self):
-        pre, post, invariants = _parse_spec_conditions("Pre-condition:\n  x > 0")
+        pre, post, properties = _parse_spec_conditions("Pre-condition:\n  x > 0")
         assert pre == "x > 0"
         assert post is None
-        assert invariants is None
+        assert properties == {}
 
     def test_parses_invariants_section(self):
         spec = (
@@ -164,10 +164,12 @@ class TestParseSpecConditions:
             "  queue size <= capacity\n"
             "  no partial messages visible\n"
         )
-        pre, post, invariants = _parse_spec_conditions(spec)
+        pre, post, properties = _parse_spec_conditions(spec)
         assert pre == "running"
         assert post == "never returns"
-        assert invariants == "queue size <= capacity\n  no partial messages visible"
+        assert properties == {
+            "invariants": "queue size <= capacity\n  no partial messages visible",
+        }
 
     def test_post_condition_stops_at_invariants(self):
         spec = (
@@ -178,9 +180,60 @@ class TestParseSpecConditions:
             "Invariants:\n"
             "  inv\n"
         )
-        _, post, invariants = _parse_spec_conditions(spec)
+        _, post, properties = _parse_spec_conditions(spec)
         assert post == "post"
-        assert invariants == "inv"
+        assert properties == {"invariants": "inv"}
+
+    def test_parses_all_property_sections(self):
+        spec = (
+            "Pre-condition:\n"
+            "  pre\n"
+            "Post-condition:\n"
+            "  post\n"
+            "Invariants:\n"
+            "  inv\n"
+            "Resource-contracts:\n"
+            "  every allocation is freed\n"
+            "Ordering-constraints:\n"
+            "  lock A before lock B\n"
+        )
+        _, post, properties = _parse_spec_conditions(spec)
+        assert post == "post"
+        assert properties == {
+            "invariants": "inv",
+            "resources": "every allocation is freed",
+            "ordering": "lock A before lock B",
+        }
+
+    def test_parses_any_subset_of_property_sections(self):
+        spec = (
+            "Pre-condition:\n"
+            "  pre\n"
+            "Post-condition:\n"
+            "  post\n"
+            "Resource-contracts:\n"
+            "  res\n"
+            "Ordering-constraints:\n"
+            "  ord\n"
+        )
+        _, post, properties = _parse_spec_conditions(spec)
+        assert post == "post"
+        assert properties == {"resources": "res", "ordering": "ord"}
+
+    def test_post_condition_stops_at_resources_or_ordering(self):
+        for label, key in (("Resource-contracts", "resources"),
+                           ("Ordering-constraints", "ordering")):
+            spec = (
+                "Pre-condition:\n"
+                "  pre\n"
+                "Post-condition:\n"
+                "  post\n"
+                f"{label}:\n"
+                "  text\n"
+            )
+            _, post, properties = _parse_spec_conditions(spec)
+            assert post == "post"
+            assert properties == {key: "text"}
 
 
 class TestHasTerminatingStatement:
@@ -223,7 +276,7 @@ _SPEC_WITHOUT_INVARIANTS = (
 )
 
 
-def _patch_reasoner_llm_calls(monkeypatch, invariant_result=(True, None, None)):
+def _patch_reasoner_llm_calls(monkeypatch, property_result=(True, None, None)):
     """Replace the LLM-backed helpers inside src.reasoner with fakes."""
     post_conditions = iter(["post after block 0", "post after block 1", "post after block 2"])
     generated = []
@@ -236,18 +289,19 @@ def _patch_reasoner_llm_calls(monkeypatch, invariant_result=(True, None, None)):
                         trace_dir=None, trace_meta=None):
         return True, None, None, None
 
-    invariant_calls = []
+    property_calls = []
 
-    def fake_invariant_check(block, pre_condition, invariants, info, language,
-                             trace_dir=None, trace_meta=None):
-        invariant_calls.append({"block": block, "pre_condition": pre_condition,
-                                "invariants": invariants})
-        return invariant_result
+    def fake_property_check(block, pre_condition, property_kind, contract_text,
+                            info, language, trace_dir=None, trace_meta=None):
+        property_calls.append({"block": block, "pre_condition": pre_condition,
+                               "property_kind": property_kind,
+                               "contract_text": contract_text})
+        return property_result
 
     monkeypatch.setattr(reasoner, "_generate_block_post_condition", fake_generate)
     monkeypatch.setattr(reasoner, "_check_post_implies_spec", fake_post_check)
-    monkeypatch.setattr(reasoner, "_check_block_preserves_invariants", fake_invariant_check)
-    return generated, invariant_calls
+    monkeypatch.setattr(reasoner, "_check_block_property", fake_property_check)
+    return generated, property_calls
 
 
 class TestFormatSpecForReasoner:
@@ -286,33 +340,102 @@ class TestFormatSpecForReasoner:
         }
         assert "Invariants:" not in format_spec_for_reasoner(spec)
 
+    def test_resources_and_ordering_appended_in_fixed_order(self):
+        spec = {
+            "signature": "transfer(a, b)",
+            "pre_condition": "both accounts valid",
+            "post_condition": "total balance unchanged",
+            "ordering": "lock A acquired before lock B",
+            "resources": "both locks released on all paths",
+            "invariants": "total balance >= 0",
+        }
+        assert format_spec_for_reasoner(spec) == (
+            "transfer(a, b)\n\n"
+            "Pre-condition:\nboth accounts valid\n\n"
+            "Post-condition:\ntotal balance unchanged\n\n"
+            "Invariants:\ntotal balance >= 0\n\n"
+            "Resource-contracts:\nboth locks released on all paths\n\n"
+            "Ordering-constraints:\nlock A acquired before lock B"
+        )
+
+    def test_resources_only_appended(self):
+        spec = {
+            "signature": "work()",
+            "pre_condition": "idle",
+            "post_condition": "done",
+            "resources": "every handle is closed",
+        }
+        assert format_spec_for_reasoner(spec) == (
+            "work()\n\n"
+            "Pre-condition:\nidle\n\n"
+            "Post-condition:\ndone\n\n"
+            "Resource-contracts:\nevery handle is closed"
+        )
+
+
+_SPEC_WITH_ALL_PROPERTIES = (
+    "serve(req)\n\n"
+    "Pre-condition:\n"
+    "  server socket is bound\n\n"
+    "Post-condition:\n"
+    "  returns only on shutdown\n\n"
+    "Invariants:\n"
+    "  queue size <= capacity\n\n"
+    "Resource-contracts:\n"
+    "  every accepted connection is closed\n\n"
+    "Ordering-constraints:\n"
+    "  queue lock held before queue access"
+)
+
 
 class TestReasonerInvariants:
     def test_every_block_checked_when_invariants_present(self, monkeypatch):
-        _, invariant_calls = _patch_reasoner_llm_calls(monkeypatch)
+        _, property_calls = _patch_reasoner_llm_calls(monkeypatch)
         func = _numbered_lines("stmt", 12)  # two blocks at GRANULARITY=5
         result = reasoner.reasoner(func, _SPEC_WITH_INVARIANTS, None, "python",
                                    all_bugs=True)
         assert result["status"] == "MATCH"
         assert result["violations"] == []
-        assert len(invariant_calls) == 2
-        assert invariant_calls[0]["pre_condition"] == "server socket is bound"
-        assert invariant_calls[1]["pre_condition"] == "post after block 0"
-        assert all(call["invariants"] == "queue size <= capacity"
-                   for call in invariant_calls)
+        assert len(property_calls) == 2
+        assert property_calls[0]["pre_condition"] == "server socket is bound"
+        assert property_calls[1]["pre_condition"] == "post after block 0"
+        assert all(call["property_kind"] == "invariants"
+                   for call in property_calls)
+        assert all(call["contract_text"] == "queue size <= capacity"
+                   for call in property_calls)
 
-    def test_no_invariant_check_without_invariants(self, monkeypatch):
-        _, invariant_calls = _patch_reasoner_llm_calls(monkeypatch)
+    def test_no_property_check_without_property_sections(self, monkeypatch):
+        _, property_calls = _patch_reasoner_llm_calls(monkeypatch)
         func = _numbered_lines("stmt", 12)
         result = reasoner.reasoner(func, _SPEC_WITHOUT_INVARIANTS, None, "python",
                                    all_bugs=True)
         assert result["status"] == "MATCH"
-        assert invariant_calls == []
+        assert property_calls == []
+
+    def test_each_declared_property_checked_once_per_block(self, monkeypatch):
+        _, property_calls = _patch_reasoner_llm_calls(monkeypatch)
+        func = _numbered_lines("stmt", 12)  # two blocks at GRANULARITY=5
+        result = reasoner.reasoner(func, _SPEC_WITH_ALL_PROPERTIES, None, "python",
+                                   all_bugs=True)
+        assert result["status"] == "MATCH"
+        assert len(property_calls) == 6
+        # Within each block the checks run in the fixed declaration order.
+        assert [call["property_kind"] for call in property_calls] == [
+            "invariants", "resources", "ordering",
+            "invariants", "resources", "ordering",
+        ]
+        contracts = {
+            "invariants": "queue size <= capacity",
+            "resources": "every accepted connection is closed",
+            "ordering": "queue lock held before queue access",
+        }
+        for call in property_calls:
+            assert call["contract_text"] == contracts[call["property_kind"]]
 
     def test_all_bugs_violation_carries_invariant_kind(self, monkeypatch):
         _patch_reasoner_llm_calls(
             monkeypatch,
-            invariant_result=(False, "Line 3: q.append(x)", "queue may overflow"),
+            property_result=(False, "Line 3: q.append(x)", "queue may overflow"),
         )
         func = _numbered_lines("stmt", 6)  # single block
         result = reasoner.reasoner(func, _SPEC_WITH_INVARIANTS, None, "python",
@@ -323,6 +446,19 @@ class TestReasonerInvariants:
         assert violation["kind"] == "invariant"
         assert violation["statements"] == "Line 3: q.append(x)"
         assert violation["reason"] == "queue may overflow"
+
+    def test_all_bugs_violations_carry_resource_and_ordering_kinds(self, monkeypatch):
+        _patch_reasoner_llm_calls(
+            monkeypatch,
+            property_result=(False, "Line 3: stmt", "broken contract"),
+        )
+        func = _numbered_lines("stmt", 6)  # single block
+        result = reasoner.reasoner(func, _SPEC_WITH_ALL_PROPERTIES, None, "python",
+                                   all_bugs=True)
+        assert result["status"] == "MISMATCH"
+        assert [v["kind"] for v in result["violations"]] == [
+            "invariant", "resource", "ordering",
+        ]
 
     def test_all_bugs_post_violation_carries_post_condition_kind(self, monkeypatch):
         _patch_reasoner_llm_calls(monkeypatch)
@@ -339,7 +475,7 @@ class TestReasonerInvariants:
     def test_non_all_bugs_invariant_violation_returns_failure_string(self, monkeypatch):
         _patch_reasoner_llm_calls(
             monkeypatch,
-            invariant_result=(False, "Line 3: q.append(x)", "queue may overflow"),
+            property_result=(False, "Line 3: q.append(x)", "queue may overflow"),
         )
         func = _numbered_lines("stmt", 6)
         result = reasoner.reasoner(func, _SPEC_WITH_INVARIANTS, None, "python",
@@ -348,3 +484,22 @@ class TestReasonerInvariants:
         assert result.startswith("Verification FAILED.")
         assert "invariant" in result
         assert "queue may overflow" in result
+
+    def test_non_all_bugs_ordering_violation_returns_failure_string(self, monkeypatch):
+        _patch_reasoner_llm_calls(monkeypatch)
+
+        def fail_on_ordering(block, pre_condition, property_kind, contract_text,
+                             info, language, trace_dir=None, trace_meta=None):
+            if property_kind == "ordering":
+                return False, "Line 2: q.append(x)", "queue accessed without lock"
+            return True, None, None
+
+        monkeypatch.setattr(reasoner, "_check_block_property", fail_on_ordering)
+        func = _numbered_lines("stmt", 6)
+        result = reasoner.reasoner(func, _SPEC_WITH_ALL_PROPERTIES, None, "python",
+                                   all_bugs=False)
+        assert isinstance(result, str)
+        assert result.startswith("Verification FAILED.")
+        assert "ordering violation" in result
+        assert "Ordering-constraints" in result
+        assert "queue accessed without lock" in result

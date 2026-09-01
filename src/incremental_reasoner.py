@@ -1194,8 +1194,9 @@ def _normalize_spec_dict(spec):
         "pre_condition": spec.get("pre_condition", ""),
         "post_condition": spec.get("post_condition", ""),
     }
-    if "invariants" in spec:
-        normalized["invariants"] = spec["invariants"]
+    for optional in ("invariants", "resources", "ordering"):
+        if optional in spec:
+            normalized[optional] = spec[optional]
     return normalized
 
 
@@ -1668,7 +1669,10 @@ def _llm_check_spec_update(proj_dir, work_dir, idx, fqn, lang_key, comment_prefi
         "2. If it must change, produce the COMPLETE replacement .spec.json object, with "
         "exactly signature, pre_condition, and post_condition, plus the optional "
         "invariants field (properties that must hold continuously for "
-        "non-terminating/long-running behavior), and NO source code.\n"
+        "non-terminating/long-running behavior), the optional resources field "
+        "(acquire/release and leak-freedom contracts for memory, locks, handles, "
+        "connections), the optional ordering field (required ordering between named "
+        "operations/events), and NO source code.\n"
         "3. ONLY if you updated .spec.json AND this function has callees: bring "
         f".info.json into line with this function's CURRENT callees ({callee_hint}). That "
         "means: (a) keep entries whose recorded expectation still matches the callee's role, "
@@ -1885,7 +1889,10 @@ def _opencode_generate_spec(proj_dir, work_dir, idx, fqn, lang_key, comment_pref
         f"{2 + step_offset}. Produce the COMPLETE .spec.json object describing this "
         "function's behavior, with exactly signature, pre_condition, and post_condition, "
         "plus the optional invariants field (properties that must hold continuously for "
-        "non-terminating/long-running behavior), and NO source code.\n"
+        "non-terminating/long-running behavior), the optional resources field "
+        "(acquire/release and leak-freedom contracts for memory, locks, handles, "
+        "connections), the optional ordering field (required ordering between named "
+        "operations/events), and NO source code.\n"
         f"{info_step}"
         f"{4 + step_offset}. Write your answer to `{result_relpath}` as a JSON object with keys:\n"
         '   - "spec_updated": boolean — true because you produced a .spec.json object.\n'

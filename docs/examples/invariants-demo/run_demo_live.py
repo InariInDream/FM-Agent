@@ -130,9 +130,18 @@ def live_check_block_preserves_invariants(block, pre_condition, invariants,
     return passed, stmts, reason
 
 
+def live_check_block_property(block, pre_condition, property_kind, contract_text,
+                              info, language, trace_dir=None, trace_meta=None):
+    # 属性检查统一走 _check_block_property；本 demo 的 spec 只声明 invariants。
+    assert property_kind == "invariants"
+    return live_check_block_preserves_invariants(
+        block, pre_condition, contract_text, info, language,
+        trace_dir=trace_dir, trace_meta=trace_meta)
+
+
 reasoner_mod._generate_block_post_condition = live_generate_block_post_condition
 reasoner_mod._check_post_implies_spec = live_check_post_implies_spec
-reasoner_mod._check_block_preserves_invariants = live_check_block_preserves_invariants
+reasoner_mod._check_block_property = live_check_block_property
 
 
 def load_numbered_function(filename):
