@@ -61,11 +61,20 @@ Ordinary functions need none of the three optional fields.
       "name": "<callee_name>",
       "signature": "<callee_name>(<params>) -> <ReturnType>",
       "pre_condition": "<what the caller guarantees before calling>",
-      "post_condition": "<what the caller expects after the call>"
+      "post_condition": "<what the caller expects after the call>",
+      "invariants": "<optional: callee properties that must hold continuously while the callee runs>",
+      "resources": "<optional: resource/memory contracts the caller must honor, e.g. the caller releases a resource the callee returns>",
+      "ordering": "<optional: ordering the callee requires, e.g. a lock the caller must hold before calling>"
     }
   ]
 }
 ```
+
+The optional `invariants`/`resources`/`ordering` fields on a callee entry mirror the
+same fields in `.spec.json`, written from the caller's perspective. Fill them in only
+when the callee's contract constrains its callers: for example, the callee returns a
+resource the caller must release, or the callee requires a specific lock order or
+that a lock is held while it runs. Otherwise omit them.
 
 If a function has no callees, write `{"callees": []}` to the `.info.json` file.
 

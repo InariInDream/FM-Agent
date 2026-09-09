@@ -107,11 +107,20 @@ def extract_spec_block(filepath: Path) -> Optional[str]:
     if not isinstance(spec, dict):
         return None
 
-    return (
+    text = (
         f"{spec.get('signature', '')}\n\n"
         f"Pre-condition:\n{spec.get('pre_condition', '')}\n\n"
         f"Post-condition:\n{spec.get('post_condition', '')}"
     )
+    for key, label in (
+        ("invariants", "Invariants"),
+        ("resources", "Resource-contracts"),
+        ("ordering", "Ordering-constraints"),
+    ):
+        value = spec.get(key)
+        if value:
+            text += f"\n\n{label}:\n{value}"
+    return text
 
 
 def extract_info_block(filepath: Path) -> Optional[dict]:
@@ -278,6 +287,14 @@ def build_prompt(
                     f"  Pre-condition: {entry.get('pre_condition', '')}\n"
                     f"  Post-condition: {entry.get('post_condition', '')}"
                 )
+                for key, label in (
+                    ("invariants", "Invariants"),
+                    ("resources", "Resource-contracts"),
+                    ("ordering", "Ordering-constraints"),
+                ):
+                    value = entry.get(key)
+                    if value:
+                        entry_text += f"\n  {label}: {value}"
                 caller_expectations.setdefault(fn_name, []).append(
                     (caller_name, entry_text)
                 )

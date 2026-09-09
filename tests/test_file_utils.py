@@ -2,6 +2,7 @@
 
 from src.file_utils import (
     _TERMINAL_VALIDATION_STRING_FIELDS,
+    _is_valid_info_json,
     _is_valid_spec_json,
     _terminal_validation_record_is_valid,
 )
@@ -142,3 +143,48 @@ class TestIsValidSpecJson:
     def test_non_dict_rejected(self):
         assert _is_valid_spec_json("nope") is False
         assert _is_valid_spec_json(None) is False
+
+
+def _valid_info():
+    return {
+        "callees": [
+            {
+                "name": "g",
+                "signature": "g(x)",
+                "pre_condition": "x > 0",
+                "post_condition": "returns x",
+            }
+        ]
+    }
+
+
+class TestIsValidInfoJson:
+    def test_required_fields_only_accepted(self):
+        assert _is_valid_info_json(_valid_info()) is True
+
+    def test_optional_property_fields_accepted(self):
+        info = _valid_info()
+        info["callees"][0]["invariants"] = "queue size <= capacity"
+        info["callees"][0]["resources"] = "caller frees the returned buffer"
+        info["callees"][0]["ordering"] = "caller holds lock A while calling"
+        assert _is_valid_info_json(info) is True
+
+    def test_empty_optional_fields_accepted(self):
+        info = _valid_info()
+        info["callees"][0]["ordering"] = ""
+        assert _is_valid_info_json(info) is True
+
+    def test_non_string_optional_field_rejected(self):
+        info = _valid_info()
+        info["callees"][0]["resources"] = ["caller frees the returned buffer"]
+        assert _is_valid_info_json(info) is False
+
+    def test_missing_required_callee_field_rejected(self):
+        info = _valid_info()
+        del info["callees"][0]["post_condition"]
+        assert _is_valid_info_json(info) is False
+
+    def test_unknown_callee_field_rejected(self):
+        info = _valid_info()
+        info["callees"][0]["extra"] = "nope"
+        assert _is_valid_info_json(info) is False

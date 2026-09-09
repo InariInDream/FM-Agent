@@ -61,6 +61,14 @@ def format_info_for_reasoner(info):
             f"Pre-condition: {callee.get('pre_condition', '')}\n"
             f"Post-condition: {callee.get('post_condition', '')}"
         )
+        for key, label in (
+            ("invariants", "Invariants"),
+            ("resources", "Resource-contracts"),
+            ("ordering", "Ordering-constraints"),
+        ):
+            value = callee.get(key)
+            if value:
+                callee_spec += f"\n{label}: {value}"
         knowledge_map.add_entry(
             callee.get("name", ""),
             callee.get("signature", ""),

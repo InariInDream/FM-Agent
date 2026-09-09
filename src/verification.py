@@ -456,6 +456,49 @@ def _clear_function_all_bugs_artifacts(output_path, output_dir, work_dir):
         pass
 
 
+_PROPERTY_FAILURE_PATTERN = re.compile(
+    r"Statements triggering the (invariant|resource|ordering) violation:\n"
+    r"(.*?)\n\n(?:Invariants|Resource-contracts|Ordering-constraints):\n"
+    r"(.*?)\n\nReason for violation:",
+    re.DOTALL,
+)
+
+
+def _parse_failure_gaps(result, spec_post):
+    """Parse a non-all-bugs 'Verification FAILED.' message into a gaps dict.
+
+    Property violations (invariant/resource/ordering) carry the violated
+    contract text as the spec claim and leave actual_behavior empty;
+    post-condition failures keep the original field mapping.
+    """
+    reason_match = re.search(r"Reason for violation:\n(.*)", result, re.DOTALL)
+    reason_text = reason_match.group(1).strip() if reason_match else ""
+
+    property_match = _PROPERTY_FAILURE_PATTERN.search(result)
+    if property_match:
+        return {
+            "spec_claim": property_match.group(3).strip(),
+            "actual_behavior": "",
+            "code_evidence": property_match.group(2).strip(),
+            "trigger_condition": reason_text,
+            "kind": property_match.group(1),
+        }
+
+    stmts_match = re.search(
+        r"Statements triggering the violation:\n(.*?)\n\nPost-condition:", result, re.DOTALL
+    )
+    post_match = re.search(
+        r"Post-condition:\n(.*?)\n\nReason for violation:", result, re.DOTALL
+    )
+    return {
+        "spec_claim": spec_post or "",
+        "actual_behavior": post_match.group(1).strip() if post_match else "",
+        "code_evidence": stmts_match.group(1).strip() if stmts_match else "",
+        "trigger_condition": reason_text,
+        "kind": "post_condition",
+    }
+
+
 def _verify_single_file(file_path, input_dir, output_dir, language, work_dir=None, resume=False, all_bugs=False):
     """Verify a single file and write the result JSON."""
     # A complete function result is the reasoning checkpoint. Resume never
@@ -543,6 +586,7 @@ def _verify_single_file(file_path, input_dir, output_dir, language, work_dir=Non
                     "actual_behavior": violation.get("post_condition") or "",
                     "code_evidence": violation.get("statements") or "",
                     "trigger_condition": violation.get("reason") or "",
+                    "kind": violation.get("kind"),
                 }
                 for violation in violations
             ]
@@ -580,31 +624,10 @@ def _verify_single_file(file_path, input_dir, output_dir, language, work_dir=Non
         elif result.startswith("Failed to "):
             output = {"function": file_path, "verdict": "ERROR", "gaps": None, "error": result}
         else:
-            stmts = post_cond = reason_text = ""
-            stmts_match = re.search(
-                r"Statements triggering the violation:\n(.*?)\n\nPost-condition:", result, re.DOTALL
-            )
-            post_match = re.search(
-                r"Post-condition:\n(.*?)\n\nReason for violation:", result, re.DOTALL
-            )
-            reason_match = re.search(r"Reason for violation:\n(.*)", result, re.DOTALL)
-
-            if stmts_match:
-                stmts = stmts_match.group(1).strip()
-            if post_match:
-                post_cond = post_match.group(1).strip()
-            if reason_match:
-                reason_text = reason_match.group(1).strip()
-
             output = {
                 "function": file_path,
                 "verdict": "MISMATCH",
-                "gaps": {
-                    "spec_claim": spec_post or "",
-                    "actual_behavior": post_cond,
-                    "code_evidence": stmts,
-                    "trigger_condition": reason_text,
-                },
+                "gaps": _parse_failure_gaps(result, spec_post),
             }
     except Exception as exc:
         logging.exception(f"Verification failed for {file_path}")
