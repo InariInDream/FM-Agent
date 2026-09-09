@@ -1,0 +1,105 @@
+****************************************************************************
+  callee 约定跨函数传递 before/after 演示
+  —— run_worker 调用 lease_buffer，缓冲区用完未归还
+  模型判断由外部大模型实时给出（经 live/ 文件交换，无需 API key）。
+****************************************************************************
+
+============================================================================
+场景 A（before）: buggy caller + 旧格式 callee info（不含 resources）
+============================================================================
+  说明: 旧格式的 callee 条目只有 name/signature/pre/post 四个字段，lease_buffer 的资源约定（缓冲区由调用方在同一迭代内释放）传不到 caller 的检查里；模型无法确定 buf 需要归还，bug 不可见。
+  目标函数: worker_caller.py（21 行）
+  caller spec 含 Resource-contracts 段: 是
+  callee info 内容:
+    lease_buffer(pool)
+    Pre-condition: pool 已初始化且有空闲缓冲区
+    Post-condition: 返回一个可用的缓冲区对象
+  切块结果（GRANULARITY=10）：共 2 块
+    块 1: Line 1 ~ Line 10（10 行）
+    块 2: Line 11 ~ Line 21（11 行）
+  --- 逐段检查过程（真实管线，模型实时应答） ---
+    [块 1] 请求模型生成块后条件
+    >>> 等待模型应答（call 1, post_condition）...
+    [块 1] 模型给出的后条件: 函数 run_worker 已定义（仅完成函数定义，尚未执行），queue 和 pool 仍保持初始化可用状态不变。
+    [块 1] 请求模型做resources检查
+    >>> 等待模型应答（call 2, property_check）...
+    [块 1] 模型判定: 通过 MATCH
+    [块 2] 请求模型生成块后条件
+    >>> 等待模型应答（call 3, post_condition）...
+    [块 2] 模型给出的后条件: 该段是一个不终止的 while True 循环：正常运行期间不会执行到循环之后的代码。每一轮迭代中，若 queue.pop 超时返回 None 则直接进入下一轮；否则 buf 被赋值为 lease_buffer(pool) 返回的可用缓冲区，fill(buf, task) 完成填充，且按 task["prio"] 为 "fast" 与否分别记录到 stats 的 fast 或 slow 统计中，随后进入下一轮迭代。queue、pool 保持可用，stats 随处理的任务数持续累积记录。
+    [块 2] 请求模型做后条件对照
+    >>> 等待模型应答（call 4, post_implies_spec）...
+    [块 2] 模型判定: MATCH
+    [块 2] 请求模型做resources检查
+    >>> 等待模型应答（call 5, property_check）...
+    [块 2] 模型判定: 通过 MATCH
+  --- 结果 ---
+  返回值（非 all_bugs 模式的字符串结果）:
+    The function passes the verification. All code blocks satisfy the specification's post-condition.
+
+============================================================================
+场景 B（after）: buggy caller + 含 resources 的 callee info
+============================================================================
+  说明: callee 条目允许携带 resources 后，lease_buffer 的约定随 info 进入 caller 的逐块检查：buf 由 lease_buffer 从 pool 取出、应由调用方在同一迭代内 release，而代码里没有 release。
+  目标函数: worker_caller.py（21 行）
+  caller spec 含 Resource-contracts 段: 是
+  callee info 内容:
+    lease_buffer(pool)
+    Pre-condition: pool 已初始化且有空闲缓冲区
+    Post-condition: 返回一个可用的缓冲区对象
+    Resource-contracts: 返回的缓冲区由调用方负责在同一轮迭代内 pool.release() 释放
+  切块结果（GRANULARITY=10）：共 2 块
+    块 1: Line 1 ~ Line 10（10 行）
+    块 2: Line 11 ~ Line 21（11 行）
+  --- 逐段检查过程（真实管线，模型实时应答） ---
+    [块 1] 请求模型生成块后条件
+    >>> 等待模型应答（call 6, post_condition）...
+    [块 1] 模型给出的后条件: 函数 run_worker 已定义（仅完成函数定义，尚未执行），queue 和 pool 仍保持初始化可用状态不变。
+    [块 1] 请求模型做resources检查
+    >>> 等待模型应答（call 7, property_check）...
+    [块 1] 模型判定: 通过 MATCH
+    [块 2] 请求模型生成块后条件
+    >>> 等待模型应答（call 8, post_condition）...
+    [块 2] 模型给出的后条件: 该段是一个不终止的 while True 循环：正常运行期间不会执行到循环之后的代码。每一轮迭代中，若 queue.pop 超时返回 None 则直接进入下一轮；否则 buf 被赋值为 lease_buffer(pool) 返回的可用缓冲区，fill(buf, task) 完成填充，且按 task["prio"] 为 "fast" 与否分别记录到 stats 的 fast 或 slow 统计中，随后进入下一轮迭代。buf 在该迭代内未被 pool.release() 释放即被丢弃引用。queue、pool 保持可用，stats 随处理的任务数持续累积记录。
+    [块 2] 请求模型做后条件对照
+    >>> 等待模型应答（call 9, post_implies_spec）...
+    [块 2] 模型判定: MATCH
+    [块 2] 请求模型做resources检查
+    >>> 等待模型应答（call 10, property_check）...
+    [块 2] 模型判定: 违反 MISMATCH
+  --- 结果 ---
+  最终状态: MISMATCH
+  违规汇总（all_bugs 模式，共 1 处）:
+    - kind = resource
+      触发语句:
+        Line 11:     while True:
+        Line 15:         buf = lease_buffer(pool)
+      原因: knowledge 中 lease_buffer 的 Resource-contracts 明确：返回的缓冲区由调用方负责在同一轮迭代内 pool.release() 释放。Line 15 每轮迭代调用 lease_buffer(pool) 获取缓冲区 buf，但整个循环体内没有任何 pool.release(buf) 调用，buf 跨迭代持有（实际是被丢弃引用而永不归还），违反 caller 的 resources 约定。反例：pool 共有 N 个缓冲区，连续到达 N+1 个非 None 任务后，前 N 轮各取走一个缓冲区且均未归还，第 N+1 轮 lease_buffer 的前置条件“有空闲缓冲区”不再成立，pool 耗尽。
+
+============================================================================
+场景 C（after 对照）: fixed caller + 同一份含 resources 的 callee info
+============================================================================
+  说明: 修复版每轮迭代用完 buf 后 pool.release(buf) 归还；逐块资源检查应全部通过。
+  目标函数: worker_caller_fixed.py（17 行）
+  caller spec 含 Resource-contracts 段: 是
+  callee info 内容:
+    lease_buffer(pool)
+    Pre-condition: pool 已初始化且有空闲缓冲区
+    Post-condition: 返回一个可用的缓冲区对象
+    Resource-contracts: 返回的缓冲区由调用方负责在同一轮迭代内 pool.release() 释放
+  切块结果（GRANULARITY=10）：共 1 块
+    块 1: Line 1 ~ Line 17（17 行）
+  --- 逐段检查过程（真实管线，模型实时应答） ---
+    [块 1] 请求模型生成块后条件
+    >>> 等待模型应答（call 11, post_condition）...
+    [块 1] 模型给出的后条件: 函数 run_worker 已定义；其函数体是一个不终止的 while True 循环，正常运行期间不会返回。每一轮迭代中，若 queue.pop 超时返回 None 则直接进入下一轮；否则 buf 被赋值为 lease_buffer(pool) 返回的可用缓冲区，fill(buf, task) 完成填充，按 task["prio"] 为 "fast" 与否分别记录到 stats 的 fast 或 slow 统计中，然后调用 pool.release(buf) 在同一迭代内归还缓冲区，再进入下一轮。queue、pool 保持可用，stats 随处理的任务数持续累积记录。
+    [块 1] 请求模型做后条件对照
+    >>> 等待模型应答（call 12, post_implies_spec）...
+    [块 1] 模型判定: MATCH
+    [块 1] 请求模型做resources检查
+    >>> 等待模型应答（call 13, property_check）...
+    [块 1] 模型判定: 通过 MATCH
+  --- 结果 ---
+  最终状态: MATCH
+
+全部场景完成。
