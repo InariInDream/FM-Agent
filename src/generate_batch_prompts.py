@@ -116,6 +116,7 @@ def extract_spec_block(filepath: Path) -> Optional[str]:
         ("invariants", "Invariants"),
         ("resources", "Resource-contracts"),
         ("ordering", "Ordering-constraints"),
+        ("concurrency", "Concurrency-contracts"),
     ):
         value = spec.get(key)
         if value:
@@ -291,6 +292,7 @@ def build_prompt(
                     ("invariants", "Invariants"),
                     ("resources", "Resource-contracts"),
                     ("ordering", "Ordering-constraints"),
+                    ("concurrency", "Concurrency-contracts"),
                 ):
                     value = entry.get(key)
                     if value:
@@ -383,7 +385,15 @@ def build_prompt(
         "named operations/events (e.g. shared state accessed only while "
         "holding the lock; two locks acquired in a fixed order). Add it only "
         "when such ordering matters. Ordinary functions need none of the "
-        "three optional fields."
+        "optional fields."
+    )
+    lines.append(
+        "Optional field: `\"concurrency\": \"...\"` — contracts that must hold "
+        "when the function runs concurrently with other threads on the same "
+        "shared state (e.g. a check-then-act sequence completed while holding "
+        "the lock; every read/write of a shared variable holding lock L; data "
+        "written before the ready flag is set). Add it only for functions "
+        "that access shared state and may be called from multiple threads."
     )
     lines.append("")
     lines.append("`<function-file>.info.json`:")

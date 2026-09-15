@@ -125,6 +125,16 @@ class TestIsValidSpecJson:
         spec["ordering"] = ["A before B"]
         assert _is_valid_spec_json(spec) is False
 
+    def test_optional_concurrency_accepted(self):
+        spec = _valid_spec()
+        spec["concurrency"] = "check-then-act on queue holds the queue lock"
+        assert _is_valid_spec_json(spec) is True
+
+    def test_non_string_concurrency_rejected(self):
+        spec = _valid_spec()
+        spec["concurrency"] = ["hold the lock"]
+        assert _is_valid_spec_json(spec) is False
+
     def test_unknown_field_still_rejected(self):
         spec = _valid_spec()
         spec["extra"] = "nope"
@@ -177,6 +187,16 @@ class TestIsValidInfoJson:
     def test_non_string_optional_field_rejected(self):
         info = _valid_info()
         info["callees"][0]["resources"] = ["caller frees the returned buffer"]
+        assert _is_valid_info_json(info) is False
+
+    def test_optional_concurrency_accepted(self):
+        info = _valid_info()
+        info["callees"][0]["concurrency"] = "caller holds lock A across the call"
+        assert _is_valid_info_json(info) is True
+
+    def test_non_string_concurrency_rejected(self):
+        info = _valid_info()
+        info["callees"][0]["concurrency"] = ["hold lock A"]
         assert _is_valid_info_json(info) is False
 
     def test_missing_required_callee_field_rejected(self):

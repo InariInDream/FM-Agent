@@ -235,6 +235,54 @@ class TestParseSpecConditions:
             assert post == "post"
             assert properties == {key: "text"}
 
+    def test_parses_concurrency_section(self):
+        spec = (
+            "Pre-condition:\n"
+            "  pre\n"
+            "Post-condition:\n"
+            "  post\n"
+            "Ordering-constraints:\n"
+            "  lock A before lock B\n"
+            "Concurrency-contracts:\n"
+            "  check-then-act on queue holds the queue lock\n"
+            "  data written before ready flag is set\n"
+        )
+        _, post, properties = _parse_spec_conditions(spec)
+        assert post == "post"
+        assert properties == {
+            "ordering": "lock A before lock B",
+            "concurrency": (
+                "check-then-act on queue holds the queue lock\n"
+                "  data written before ready flag is set"
+            ),
+        }
+
+    def test_no_concurrency_key_when_section_missing(self):
+        spec = (
+            "Pre-condition:\n"
+            "  pre\n"
+            "Post-condition:\n"
+            "  post\n"
+            "Ordering-constraints:\n"
+            "  lock A before lock B\n"
+        )
+        _, post, properties = _parse_spec_conditions(spec)
+        assert post == "post"
+        assert "concurrency" not in properties
+
+    def test_post_condition_stops_at_concurrency(self):
+        spec = (
+            "Pre-condition:\n"
+            "  pre\n"
+            "Post-condition:\n"
+            "  post\n"
+            "Concurrency-contracts:\n"
+            "  every read of counter holds lock L\n"
+        )
+        _, post, properties = _parse_spec_conditions(spec)
+        assert post == "post"
+        assert properties == {"concurrency": "every read of counter holds lock L"}
+
 
 class TestHasTerminatingStatement:
     def test_c_return(self):
@@ -372,6 +420,31 @@ class TestFormatSpecForReasoner:
             "Resource-contracts:\nevery handle is closed"
         )
 
+    def test_concurrency_appended_after_ordering(self):
+        spec = {
+            "signature": "publish(d)",
+            "pre_condition": "d is valid",
+            "post_condition": "d is visible to readers",
+            "ordering": "lock acquired before queue access",
+            "concurrency": "data written before ready flag is set",
+        }
+        assert format_spec_for_reasoner(spec) == (
+            "publish(d)\n\n"
+            "Pre-condition:\nd is valid\n\n"
+            "Post-condition:\nd is visible to readers\n\n"
+            "Ordering-constraints:\nlock acquired before queue access\n\n"
+            "Concurrency-contracts:\ndata written before ready flag is set"
+        )
+
+    def test_empty_concurrency_omitted(self):
+        spec = {
+            "signature": "add(a, b)",
+            "pre_condition": "a and b are ints",
+            "post_condition": "returns a + b",
+            "concurrency": "",
+        }
+        assert "Concurrency-contracts:" not in format_spec_for_reasoner(spec)
+
 
 _SPEC_WITH_ALL_PROPERTIES = (
     "serve(req)\n\n"
@@ -503,3 +576,58 @@ class TestReasonerInvariants:
         assert "ordering violation" in result
         assert "Ordering-constraints" in result
         assert "queue accessed without lock" in result
+
+
+_SPEC_WITH_CONCURRENCY = (
+    "publish(d)\n\n"
+    "Pre-condition:\n"
+    "  d is valid\n\n"
+    "Post-condition:\n"
+    "  d is visible to readers\n\n"
+    "Concurrency-contracts:\n"
+    "  data is written before the ready flag is set"
+)
+
+
+class TestReasonerConcurrency:
+    def test_every_block_checked_once_when_concurrency_present(self, monkeypatch):
+        _, property_calls = _patch_reasoner_llm_calls(monkeypatch)
+        func = _numbered_lines("stmt", 12)  # two blocks at GRANULARITY=5
+        result = reasoner.reasoner(func, _SPEC_WITH_CONCURRENCY, None, "python",
+                                   all_bugs=True)
+        assert result["status"] == "MATCH"
+        assert len(property_calls) == 2
+        assert all(call["property_kind"] == "concurrency"
+                   for call in property_calls)
+        assert all(call["contract_text"] == "data is written before the ready flag is set"
+                   for call in property_calls)
+
+    def test_all_bugs_violation_carries_concurrency_kind(self, monkeypatch):
+        _patch_reasoner_llm_calls(
+            monkeypatch,
+            property_result=(False, "Line 2: ready = True",
+                             "flag set before data is written"),
+        )
+        func = _numbered_lines("stmt", 6)  # single block
+        result = reasoner.reasoner(func, _SPEC_WITH_CONCURRENCY, None, "python",
+                                   all_bugs=True)
+        assert result["status"] == "MISMATCH"
+        assert len(result["violations"]) == 1
+        violation = result["violations"][0]
+        assert violation["kind"] == "concurrency"
+        assert violation["statements"] == "Line 2: ready = True"
+        assert violation["reason"] == "flag set before data is written"
+
+    def test_non_all_bugs_concurrency_violation_returns_failure_string(self, monkeypatch):
+        _patch_reasoner_llm_calls(
+            monkeypatch,
+            property_result=(False, "Line 2: ready = True",
+                             "flag set before data is written"),
+        )
+        func = _numbered_lines("stmt", 6)
+        result = reasoner.reasoner(func, _SPEC_WITH_CONCURRENCY, None, "python",
+                                   all_bugs=False)
+        assert isinstance(result, str)
+        assert result.startswith("Verification FAILED.")
+        assert "concurrency violation" in result
+        assert "Concurrency-contracts" in result

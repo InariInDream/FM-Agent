@@ -196,6 +196,7 @@ _PROPERTY_SECTIONS = [
     ("invariants", "Invariants"),
     ("resources", "Resource-contracts"),
     ("ordering", "Ordering-constraints"),
+    ("concurrency", "Concurrency-contracts"),
 ]
 
 # Violation kind reported for each property section.
@@ -203,6 +204,7 @@ _PROPERTY_VIOLATION_KINDS = {
     "invariants": "invariant",
     "resources": "resource",
     "ordering": "ordering",
+    "concurrency": "concurrency",
 }
 
 
@@ -228,7 +230,7 @@ def reasoner(func, spec, info, language, trace_context=None, all_bugs=False):
     trace_context = trace_context or {}
     trace_dir = trace_context.get("trace_dir")
     # Step 1: Parse pre-condition, post-condition, and optional property
-    # sections (invariants/resources/ordering) from spec
+    # sections (invariants/resources/ordering/concurrency) from spec
     pre_condition, spec_post_condition, properties = _parse_spec_conditions(spec)
     if not pre_condition or not spec_post_condition:
         error = "Failed to parse pre/post conditions from the spec."
@@ -346,9 +348,9 @@ def reasoner(func, spec, info, language, trace_context=None, all_bugs=False):
                         f"Reason for violation:\n{reason}"
                     )
 
-        # For each declared property (invariants, resources, ordering), every
-        # block must satisfy it at all times while running (not just at its
-        # exit point).
+        # For each declared property (invariants, resources, ordering,
+        # concurrency), every block must satisfy it at all times while
+        # running (not just at its exit point).
         for property_key, property_label in _PROPERTY_SECTIONS:
             contract_text = properties.get(property_key)
             if not contract_text:

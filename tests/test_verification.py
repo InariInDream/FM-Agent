@@ -12,6 +12,7 @@ _PROPERTY_LABELS = {
     "invariant": "Invariants",
     "resource": "Resource-contracts",
     "ordering": "Ordering-constraints",
+    "concurrency": "Concurrency-contracts",
 }
 
 
@@ -28,7 +29,7 @@ def _property_failure(kind, label):
 
 
 class TestParseFailureGaps:
-    @pytest.mark.parametrize("kind", ["invariant", "resource", "ordering"])
+    @pytest.mark.parametrize("kind", ["invariant", "resource", "ordering", "concurrency"])
     def test_property_violation_fields_extracted(self, kind):
         gaps = _parse_failure_gaps(_property_failure(kind, _PROPERTY_LABELS[kind]), "post text")
 

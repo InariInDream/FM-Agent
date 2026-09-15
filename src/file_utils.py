@@ -77,7 +77,7 @@ def _is_valid_spec_json(data):
     if not isinstance(data, dict):
         return False
     if not _SPEC_FIELDS.issubset(data) or not set(data).issubset(
-            _SPEC_FIELDS | {"invariants", "resources", "ordering"}):
+            _SPEC_FIELDS | {"invariants", "resources", "ordering", "concurrency"}):
         return False
     return all(isinstance(value, str) for value in data.values())
 
@@ -95,7 +95,7 @@ def _is_valid_info_json(data):
         if not isinstance(callee, dict):
             return False
         if not _CALLEE_FIELDS.issubset(callee) or not set(callee).issubset(
-                _CALLEE_FIELDS | {"invariants", "resources", "ordering"}):
+                _CALLEE_FIELDS | {"invariants", "resources", "ordering", "concurrency"}):
             return False
         if not all(isinstance(value, str) for value in callee.values()):
             return False

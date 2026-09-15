@@ -457,8 +457,8 @@ def _clear_function_all_bugs_artifacts(output_path, output_dir, work_dir):
 
 
 _PROPERTY_FAILURE_PATTERN = re.compile(
-    r"Statements triggering the (invariant|resource|ordering) violation:\n"
-    r"(.*?)\n\n(?:Invariants|Resource-contracts|Ordering-constraints):\n"
+    r"Statements triggering the (invariant|resource|ordering|concurrency) violation:\n"
+    r"(.*?)\n\n(?:Invariants|Resource-contracts|Ordering-constraints|Concurrency-contracts):\n"
     r"(.*?)\n\nReason for violation:",
     re.DOTALL,
 )
@@ -467,8 +467,8 @@ _PROPERTY_FAILURE_PATTERN = re.compile(
 def _parse_failure_gaps(result, spec_post):
     """Parse a non-all-bugs 'Verification FAILED.' message into a gaps dict.
 
-    Property violations (invariant/resource/ordering) carry the violated
-    contract text as the spec claim and leave actual_behavior empty;
+    Property violations (invariant/resource/ordering/concurrency) carry the
+    violated contract text as the spec claim and leave actual_behavior empty;
     post-condition failures keep the original field mapping.
     """
     reason_match = re.search(r"Reason for violation:\n(.*)", result, re.DOTALL)

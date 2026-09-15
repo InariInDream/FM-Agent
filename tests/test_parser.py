@@ -36,3 +36,18 @@ class TestFormatInfoForReasoner:
         assert "Invariants: queue size <= capacity" in text
         assert "Resource-contracts: caller frees the returned buffer" in text
         assert "Ordering-constraints: caller holds lock A while calling" in text
+
+    def test_callee_concurrency_field_appended(self):
+        info = {
+            "callees": [
+                {
+                    "name": "g",
+                    "signature": "g(x)",
+                    "pre_condition": "x > 0",
+                    "post_condition": "returns x",
+                    "concurrency": "caller holds lock A across the call",
+                }
+            ]
+        }
+        text = str(format_info_for_reasoner(info))
+        assert "Concurrency-contracts: caller holds lock A across the call" in text

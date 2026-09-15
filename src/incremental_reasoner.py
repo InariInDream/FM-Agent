@@ -1194,7 +1194,7 @@ def _normalize_spec_dict(spec):
         "pre_condition": spec.get("pre_condition", ""),
         "post_condition": spec.get("post_condition", ""),
     }
-    for optional in ("invariants", "resources", "ordering"):
+    for optional in ("invariants", "resources", "ordering", "concurrency"):
         if optional in spec:
             normalized[optional] = spec[optional]
     return normalized
@@ -1215,7 +1215,7 @@ def _normalize_info_dict(info):
             "pre_condition": callee.get("pre_condition", ""),
             "post_condition": callee.get("post_condition", ""),
         }
-        for optional in ("invariants", "resources", "ordering"):
+        for optional in ("invariants", "resources", "ordering", "concurrency"):
             if optional in callee:
                 normalized[optional] = callee[optional]
         normalized_callees.append(normalized)
@@ -1675,7 +1675,9 @@ def _llm_check_spec_update(proj_dir, work_dir, idx, fqn, lang_key, comment_prefi
         "non-terminating/long-running behavior), the optional resources field "
         "(acquire/release and leak-freedom contracts for memory, locks, handles, "
         "connections), the optional ordering field (required ordering between named "
-        "operations/events), and NO source code.\n"
+        "operations/events), the optional concurrency field (contracts that must hold "
+        "when the function runs concurrently with other threads on the same shared "
+        "state), and NO source code.\n"
         "3. ONLY if you updated .spec.json AND this function has callees: bring "
         f".info.json into line with this function's CURRENT callees ({callee_hint}). That "
         "means: (a) keep entries whose recorded expectation still matches the callee's role, "
@@ -1895,7 +1897,9 @@ def _opencode_generate_spec(proj_dir, work_dir, idx, fqn, lang_key, comment_pref
         "non-terminating/long-running behavior), the optional resources field "
         "(acquire/release and leak-freedom contracts for memory, locks, handles, "
         "connections), the optional ordering field (required ordering between named "
-        "operations/events), and NO source code.\n"
+        "operations/events), the optional concurrency field (contracts that must hold "
+        "when the function runs concurrently with other threads on the same shared "
+        "state), and NO source code.\n"
         f"{info_step}"
         f"{4 + step_offset}. Write your answer to `{result_relpath}` as a JSON object with keys:\n"
         '   - "spec_updated": boolean — true because you produced a .spec.json object.\n'

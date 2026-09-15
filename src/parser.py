@@ -40,6 +40,9 @@ def format_spec_for_reasoner(spec):
     ordering = spec.get('ordering')
     if ordering:
         text += f"\n\nOrdering-constraints:\n{ordering}"
+    concurrency = spec.get('concurrency')
+    if concurrency:
+        text += f"\n\nConcurrency-contracts:\n{concurrency}"
     return text
 
 
@@ -65,6 +68,7 @@ def format_info_for_reasoner(info):
             ("invariants", "Invariants"),
             ("resources", "Resource-contracts"),
             ("ordering", "Ordering-constraints"),
+            ("concurrency", "Concurrency-contracts"),
         ):
             value = callee.get(key)
             if value:

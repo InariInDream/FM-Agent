@@ -468,6 +468,47 @@ def _check_block_property(block, pre_condition, property_kind, contract_text,
             "Provide the specific violating path if any constraint can be broken. Return only the JSON object."
         )
         summary = "Checked whether the block satisfies the spec ordering constraints"
+    elif property_kind == "concurrency":
+        system_content = (
+            lang_expertise +
+            "Given a code block, its entry condition, and a set of concurrency contracts on shared state "
+            "(e.g. 'a check-then-act sequence on the shared collection completes while holding the lock', "
+            "'every read/write of shared variable Y holds lock L', 'data is written before the ready flag is set'), "
+            "determine whether there exists a concrete interleaving of the block with another thread running the "
+            "same or a related function that violates any declared concurrency contract. "
+            "Assume other threads may execute this function (or related functions touching the same shared state) "
+            "concurrently at any point while the block runs. "
+            "Typical violations: a check-then-act sequence that does not hold the required lock for its whole duration, "
+            "a read or write of shared state without holding the declared lock, "
+            "or a publication that sets a flag before writing the data it announces (broken happens-before). "
+            "Focus on finding CONCRETE COUNTEREXAMPLES: a specific two-thread interleaving (what thread 1 executes, "
+            "where thread 2 runs in between, and the resulting broken state) on which a concurrency contract fails. "
+            "For each potential violation, construct a specific interleaving, trace what both threads do step by step, "
+            "and check whether every concurrency contract holds under every interleaving.\n"
+            "Return only a valid JSON object. Do not include markdown, tags, or prose. "
+            "Use exactly this schema: "
+            "{\"verdict\": \"MATCH|MISMATCH\", \"counterexample\": string|null, "
+            "\"offending_statements\": string|null, \"reason\": string}. "
+            "For MISMATCH, counterexample, offending_statements, and reason must be non-empty strings; "
+            "counterexample must describe one concrete two-thread interleaving; "
+            "offending_statements must preserve any 'Line N:' prefixes from the code block. "
+            "For MATCH, counterexample and offending_statements must be null or empty, and reason may be empty."
+        )
+        user_content = (
+            f"Programming language: {language}\n\n"
+            f"Code block:\n```{language.lower()}\n{block}\n```\n\n"
+            f"Entry condition (holds when the block starts):\n{pre_condition}\n\n"
+            f"Concurrency contracts (must hold under every interleaving with concurrent threads):\n{contract_text}\n"
+            f"{info_str}\n"
+            "Assume other threads may run this function or related functions on the same shared state concurrently. "
+            "Is there a concrete interleaving in which the block violates any declared concurrency contract: "
+            "a check-then-act sequence interrupted mid-way because the required lock is not held throughout, "
+            "a shared-state read/write without the declared lock, or a flag set before the data it publishes? "
+            "Check each concurrency contract against each statement under possible interleavings. "
+            "Provide a specific two-thread interleaving counterexample if any contract can be broken. "
+            "Return only the JSON object."
+        )
+        summary = "Checked whether the block satisfies the spec concurrency contracts"
     else:
         raise ValueError(f"Unknown property kind: {property_kind}")
     purpose = f"check_block_{property_kind}"
