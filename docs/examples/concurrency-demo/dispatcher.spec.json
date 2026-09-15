@@ -1,0 +1,6 @@
+{
+  "signature": "run_dispatcher(queue, pending, stats, lock)",
+  "pre_condition": "queue、pending、stats、lock 已初始化可用；pending 为空 set；stats[\"done\"] 为 0",
+  "post_condition": "正常运行期间不返回（while True 事件循环），无返回路径",
+  "concurrency": "本函数会被多个线程以同一组 pending、stats、lock 并发调用。对 pending 的\"检查是否存在再加入\"序列必须在同一次持锁（with lock）内完成，中途不得释放；stats 的所有读写必须持有 lock"
+}

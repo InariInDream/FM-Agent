@@ -1,0 +1,95 @@
+****************************************************************************
+  多线程并发约定（concurrency）before/after 演示
+  —— run_dispatcher 多线程共享 pending/stats，check-then-act 未持锁
+  模型判断由外部大模型实时给出（经 live/ 文件交换，无需 API key）。
+****************************************************************************
+
+============================================================================
+场景 A（before）: buggy 版 + 旧式 spec（不含 concurrency）
+============================================================================
+  说明: 旧式 spec 只有 signature/pre/post 三个基础字段，并发约定传不到检查里；模型看不到 check-then-act 必须持锁的要求，两处并发 bug 不可见。
+  目标函数: task_dispatcher.py（21 行）
+  spec 含 Concurrency-contracts 段: 否
+  切块结果（GRANULARITY=10）：共 2 块
+    块 1: Line 1 ~ Line 10（10 行）
+    块 2: Line 11 ~ Line 21（11 行）
+  --- 逐段检查过程（真实管线，模型实时应答） ---
+    [块 1] 请求模型生成块后条件
+    >>> 等待模型应答（call 1, post_condition）...
+    [块 1] 模型给出的后条件: docstring 与函数定义已处理，run_dispatcher 已定义但尚未执行；queue、pending、stats、lock 保持初始化状态，pending 仍为空 set，stats["done"] 仍为 0。
+    [块 2] 请求模型生成块后条件
+    >>> 等待模型应答（call 2, post_condition）...
+    [块 2] 模型给出的后条件: 循环持续运行：每轮从 queue 取出一个任务（为 None 时继续下一轮）；若任务 id 不在 pending 中，则 prepare 后将其 id 加入 pending；随后 process 处理该任务并把 stats["done"] 加 1；函数为 while True 事件循环，正常运行期间不返回。
+    [块 2] 请求模型做后条件对照
+    >>> 等待模型应答（call 3, post_implies_spec）...
+    [块 2] 模型判定: MATCH
+  --- 结果 ---
+  返回值（非 all_bugs 模式的字符串结果）:
+    The function passes the verification. All code blocks satisfy the specification's post-condition.
+
+============================================================================
+场景 B（after）: buggy 版 + 完整 spec（含 concurrency，all_bugs=True）
+============================================================================
+  说明: spec 允许携带 concurrency 后，约定随 spec 进入逐块并发检查：pending 的"检查再加入"必须在同一次持锁内完成、stats 读写必须持锁——buggy 版两处都没做到，应报出两处 kind=concurrency 违规。
+  目标函数: task_dispatcher.py（21 行）
+  spec 含 Concurrency-contracts 段: 是
+  切块结果（GRANULARITY=10）：共 2 块
+    块 1: Line 1 ~ Line 10（10 行）
+    块 2: Line 11 ~ Line 21（11 行）
+  --- 逐段检查过程（真实管线，模型实时应答） ---
+    [块 1] 请求模型生成块后条件
+    >>> 等待模型应答（call 4, post_condition）...
+    [块 1] 模型给出的后条件: docstring 与函数定义已处理，run_dispatcher 已定义但尚未执行；queue、pending、stats、lock 保持初始化状态，pending 仍为空 set，stats["done"] 仍为 0。
+    [块 1] 请求模型做concurrency检查
+    >>> 等待模型应答（call 5, property_check）...
+    [块 1] 模型判定: 通过 MATCH
+    [块 2] 请求模型生成块后条件
+    >>> 等待模型应答（call 6, post_condition）...
+    [块 2] 模型给出的后条件: 循环持续运行：每轮从 queue 取出一个任务（为 None 时继续下一轮）；若任务 id 不在 pending 中，则 prepare 后将其 id 加入 pending；随后 process 处理该任务并把 stats["done"] 加 1；函数为 while True 事件循环，正常运行期间不返回。
+    [块 2] 请求模型做后条件对照
+    >>> 等待模型应答（call 7, post_implies_spec）...
+    [块 2] 模型判定: MATCH
+    [块 2] 请求模型做concurrency检查
+    >>> 等待模型应答（call 8, property_check）...
+    [块 2] 模型判定: 违反 MISMATCH
+  --- 结果 ---
+  最终状态: MISMATCH
+  违规汇总（all_bugs 模式，共 1 处）:
+    - kind = concurrency
+      触发语句:
+        Line 16: if task["id"] not in pending:
+        Line 18: pending.add(task["id"])
+        Line 21: stats["done"] += 1
+      原因: 存在两处违反并发约定的交错。
+反例 1（check-then-act 中途未持锁，违反"检查再加入"必须在同一次持锁内完成）：线程 1 在 Line 16 检查到任务 id=42 不在 pending 中、还没执行 Line 18 的 add 时被切换；线程 2 拿到同一 id=42 的任务，在 Line 16 也检查到 42 不在 pending 中；两个线程都通过检查、都执行 process(task)，同一任务被处理两次，pending 的去重保护失效。
+反例 2（共享计数器自增未持锁，违反 stats 读写必须持有 lock）：stats["done"] 当前为 5，线程 1 和线程 2 同时执行 Line 21，各自读到 5、各自加 1 后都写回 6；实际处理了两个任务，但 stats["done"] 只从 5 涨到 6，丢失一次更新。
+
+============================================================================
+场景 C（after 对照）: fixed 版 + 同一份完整 spec（all_bugs=True）
+============================================================================
+  说明: 修复版把检查+加入放进同一次 with lock、stats 自增也持锁；逐块并发检查应全部通过。
+  目标函数: task_dispatcher_fixed.py（23 行）
+  spec 含 Concurrency-contracts 段: 是
+  切块结果（GRANULARITY=10）：共 2 块
+    块 1: Line 1 ~ Line 10（10 行）
+    块 2: Line 11 ~ Line 23（13 行）
+  --- 逐段检查过程（真实管线，模型实时应答） ---
+    [块 1] 请求模型生成块后条件
+    >>> 等待模型应答（call 9, post_condition）...
+    [块 1] 模型给出的后条件: docstring 与函数定义已处理，run_dispatcher 已定义但尚未执行；queue、pending、stats、lock 保持初始化状态，pending 仍为空 set，stats["done"] 仍为 0。
+    [块 1] 请求模型做concurrency检查
+    >>> 等待模型应答（call 10, property_check）...
+    [块 1] 模型判定: 通过 MATCH
+    [块 2] 请求模型生成块后条件
+    >>> 等待模型应答（call 11, post_condition）...
+    [块 2] 模型给出的后条件: 循环持续运行：每轮从 queue 取出一个任务（为 None 时继续下一轮）；持锁检查任务 id 是否在 pending 中，不在则 prepare 后加入 pending（检查与加入在同一次持锁内完成）；随后 process 处理该任务，并持锁把 stats["done"] 加 1；函数为 while True 事件循环，正常运行期间不返回。
+    [块 2] 请求模型做后条件对照
+    >>> 等待模型应答（call 12, post_implies_spec）...
+    [块 2] 模型判定: MATCH
+    [块 2] 请求模型做concurrency检查
+    >>> 等待模型应答（call 13, property_check）...
+    [块 2] 模型判定: 通过 MATCH
+  --- 结果 ---
+  最终状态: MATCH
+
+全部场景完成。
