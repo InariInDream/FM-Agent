@@ -30,7 +30,7 @@
 ============================================================================
 场景 B（after）: buggy 版 + 完整 spec（含 concurrency，all_bugs=True）
 ============================================================================
-  说明: spec 允许携带 concurrency 后，约定随 spec 进入逐块并发检查：pending 的"检查再加入"必须在同一次持锁内完成、stats 读写必须持锁——buggy 版两处都没做到，应报出两处 kind=concurrency 违规。
+  说明: spec 允许携带 concurrency 后，约定随 spec 进入逐块并发检查：pending 的"检查再加入"必须在同一次持锁内完成、stats 读写必须持锁——buggy 版两处都没做到。切块后两处违规点落在同一个块里，一次并发检查会把两处一起报出（一条 kind=concurrency 违规记录，触发语句含三行）。
   目标函数: task_dispatcher.py（21 行）
   spec 含 Concurrency-contracts 段: 是
   切块结果（GRANULARITY=10）：共 2 块

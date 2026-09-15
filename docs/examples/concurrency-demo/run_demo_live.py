@@ -16,7 +16,7 @@
   A (before): buggy 版 + 旧式 spec（不含 concurrency 字段）
               → 验证通过（并发约定传不过来，bug 不可见）
   B (after):  buggy 版 + 完整 spec（含 concurrency 字段，all_bugs=True）
-              → MISMATCH（并发检查发现两处违规，kind=concurrency）
+              → MISMATCH（并发检查发现违规，kind=concurrency）
   C (after):  fixed 版 + 同一份完整 spec（all_bugs=True）→ MATCH
 
 运行方式：
@@ -257,7 +257,9 @@ def main():
         "task_dispatcher.py", with_concurrency=True, all_bugs=True,
         note="spec 允许携带 concurrency 后，约定随 spec 进入逐块并发检查："
              "pending 的\"检查再加入\"必须在同一次持锁内完成、stats 读写必须"
-             "持锁——buggy 版两处都没做到，应报出两处 kind=concurrency 违规。",
+             "持锁——buggy 版两处都没做到。切块后两处违规点落在同一个块里，"
+             "一次并发检查会把两处一起报出（一条 kind=concurrency 违规记录，"
+             "触发语句含三行）。",
     )
     run_scenario(
         "C（after 对照）", "fixed 版 + 同一份完整 spec（all_bugs=True）",
