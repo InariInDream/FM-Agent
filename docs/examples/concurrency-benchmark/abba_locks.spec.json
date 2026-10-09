@@ -1,0 +1,6 @@
+{
+  "signature": "transfer(src, dst, lock_a, lock_b, amount)",
+  "pre_condition": "src、dst 账户对象与 lock_a、lock_b 均已初始化可用；当前线程未持有任何一把锁",
+  "post_condition": "按 amount 正负完成转账：amount >= 0 时 src 转出 amount、dst 转入 amount；amount < 0 时 dst 转出 -amount、src 转入 -amount",
+  "concurrency": "本函数会被多个线程对同一组锁并发调用；任何路径上 lock_a 必须先于 lock_b 获取"
+}
