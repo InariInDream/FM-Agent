@@ -34,6 +34,15 @@ def format_spec_for_reasoner(spec):
     invariants = spec.get('invariants')
     if invariants:
         text += f"\n\nInvariants:\n{invariants}"
+    resources = spec.get('resources')
+    if resources:
+        text += f"\n\nResource-contracts:\n{resources}"
+    ordering = spec.get('ordering')
+    if ordering:
+        text += f"\n\nOrdering-constraints:\n{ordering}"
+    concurrency = spec.get('concurrency')
+    if concurrency:
+        text += f"\n\nConcurrency-contracts:\n{concurrency}"
     return text
 
 
@@ -55,6 +64,15 @@ def format_info_for_reasoner(info):
             f"Pre-condition: {callee.get('pre_condition', '')}\n"
             f"Post-condition: {callee.get('post_condition', '')}"
         )
+        for key, label in (
+            ("invariants", "Invariants"),
+            ("resources", "Resource-contracts"),
+            ("ordering", "Ordering-constraints"),
+            ("concurrency", "Concurrency-contracts"),
+        ):
+            value = callee.get(key)
+            if value:
+                callee_spec += f"\n{label}: {value}"
         knowledge_map.add_entry(
             callee.get("name", ""),
             callee.get("signature", ""),

@@ -1,0 +1,6 @@
+{
+  "signature": "count_events(stream, stats, lock)",
+  "pre_condition": "stream、stats、lock 已初始化可用；stats[\"count\"] 为 0",
+  "post_condition": "正常运行期间不返回（while True 事件循环），无返回路径",
+  "concurrency": "本函数会被多个线程以同一组 stats、lock 并发调用；stats 的所有读写必须持有 lock"
+}

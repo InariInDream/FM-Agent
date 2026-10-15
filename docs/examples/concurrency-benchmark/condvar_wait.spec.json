@@ -1,0 +1,6 @@
+{
+  "signature": "consumer(queue, cond)",
+  "pre_condition": "queue 为共享队列、cond 为绑定同一互斥锁的条件变量，均已初始化可用",
+  "post_condition": "正常运行期间不返回（while True 消费循环），无返回路径",
+  "concurrency": "cond.wait() 返回后必须在循环中复查条件；虚假唤醒或生产者通知后队列被其他消费者取空时，不得直接 pop"
+}

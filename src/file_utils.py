@@ -73,16 +73,17 @@ def collect_file_names(input_dir, output_path="file_list.json"):
 
 
 def _is_valid_spec_json(data):
-    """Check that .spec.json contains the required fields plus optional invariants."""
+    """Check that .spec.json contains the required fields plus optional property fields."""
     if not isinstance(data, dict):
         return False
-    if not _SPEC_FIELDS.issubset(data) or not set(data).issubset(_SPEC_FIELDS | {"invariants"}):
+    if not _SPEC_FIELDS.issubset(data) or not set(data).issubset(
+            _SPEC_FIELDS | {"invariants", "resources", "ordering", "concurrency"}):
         return False
     return all(isinstance(value, str) for value in data.values())
 
 
 def _is_valid_info_json(data):
-    """Check that .info.json contains exactly the supported fields."""
+    """Check that .info.json contains the required fields plus optional property fields."""
     if not isinstance(data, dict) or set(data) != {"callees"}:
         return False
 
@@ -91,9 +92,12 @@ def _is_valid_info_json(data):
         return False
 
     for callee in callees:
-        if not isinstance(callee, dict) or set(callee) != _CALLEE_FIELDS:
+        if not isinstance(callee, dict):
             return False
-        if not all(isinstance(callee[field], str) for field in _CALLEE_FIELDS):
+        if not _CALLEE_FIELDS.issubset(callee) or not set(callee).issubset(
+                _CALLEE_FIELDS | {"invariants", "resources", "ordering", "concurrency"}):
+            return False
+        if not all(isinstance(value, str) for value in callee.values()):
             return False
 
     return True
@@ -212,11 +216,16 @@ def _all_bugs_candidate_paths(result_path, result):
             or candidate.get("function") != primary_function
             or candidate.get("verdict") != "MISMATCH"
             or not isinstance(candidate.get("gaps"), dict)
-            or set(candidate["gaps"]) != _ALL_BUGS_GAP_FIELDS
+            or not _ALL_BUGS_GAP_FIELDS.issubset(candidate["gaps"])
+            or not set(candidate["gaps"]).issubset(_ALL_BUGS_GAP_FIELDS | {"kind"})
             or not all(
                 isinstance(candidate["gaps"][field], str)
                 and candidate["gaps"][field].strip()
                 for field in _ALL_BUGS_GAP_FIELDS
+            )
+            or (
+                "kind" in candidate["gaps"]
+                and not isinstance(candidate["gaps"]["kind"], str)
             )
         ):
             return None

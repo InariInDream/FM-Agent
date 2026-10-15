@@ -1,0 +1,444 @@
+****************************************************************************
+  并发漏洞检出基准：6 个已知并发 bug 案例 × 三个场景
+  —— spec 第四个可选字段 concurrency 的检出能力对照
+  模型判断由外部大模型实时给出（经 live/ 文件交换，无需 API key）。
+****************************************************************************
+
+############################################################################
+# 案例: abba_locks —— 正向路径先 A 后 B、反向路径先 B 后 A，两条路径锁顺序相反，并发下形成 ABBA 死锁
+############################################################################
+
+============================================================================
+场景 A（abba_locks）: buggy 版 + 旧式 spec（不含 concurrency）
+============================================================================
+  说明: 旧式 spec 只有 signature/pre/post 三个基础字段，并发约定传不到检查里，并发 bug 预期不可见。
+  目标函数: abba_locks.py（13 行）
+  spec 含 Concurrency-contracts 段: 否
+  切块结果（GRANULARITY=10）：共 1 块
+    块 1: Line 1 ~ Line 13（13 行）
+  --- 逐段检查过程（真实管线，模型实时应答） ---
+    [块 1] 请求模型生成块后条件
+    >>> 等待模型应答（call 1, post_condition）...
+    [块 1] 模型给出的后条件: 两条路径都已持锁完成转账：amount >= 0 时先获取 lock_a 再获取 lock_b，src 转出 amount、dst 转入 amount；amount < 0 时先获取 lock_b 再获取 lock_a，dst 转出 -amount、src 转入 -amount；函数返回前两把锁均已释放
+    [块 1] 请求模型做后条件对照
+    >>> 等待模型应答（call 2, post_implies_spec）...
+    [块 1] 模型判定: MATCH
+  --- 结果 ---
+  返回值（非 all_bugs 模式的字符串结果）:
+    The function passes the verification. All code blocks satisfy the specification's post-condition.
+
+============================================================================
+场景 B（abba_locks）: buggy 版 + 完整 spec（含 concurrency，all_bugs=True）
+============================================================================
+  说明: 完整 spec 携带 concurrency 约定，逐块并发检查应发现违规，违规 kind=concurrency。bug: 正向路径先 A 后 B、反向路径先 B 后 A，两条路径锁顺序相反，并发下形成 ABBA 死锁。
+  目标函数: abba_locks.py（13 行）
+  spec 含 Concurrency-contracts 段: 是
+  切块结果（GRANULARITY=10）：共 1 块
+    块 1: Line 1 ~ Line 13（13 行）
+  --- 逐段检查过程（真实管线，模型实时应答） ---
+    [块 1] 请求模型生成块后条件
+    >>> 等待模型应答（call 3, post_condition）...
+    [块 1] 模型给出的后条件: 两条路径都在持锁后完成转账：amount >= 0 时按 lock_a→lock_b 顺序取锁，src 转出 amount、dst 转入 amount；amount < 0 时按 lock_b→lock_a 顺序取锁，dst 转出 -amount、src 转入 -amount；返回前两把锁都已释放
+    [块 1] 请求模型做后条件对照
+    >>> 等待模型应答（call 4, post_implies_spec）...
+    [块 1] 模型判定: MATCH
+    [块 1] 请求模型做concurrency检查
+    >>> 等待模型应答（call 5, property_check）...
+    [块 1] 模型判定: 违反 MISMATCH
+  --- 结果 ---
+  最终状态: MISMATCH
+  违规汇总（all_bugs 模式，共 1 处）:
+    - kind = concurrency
+      触发语句:
+        Line 10:         with lock_b:
+        Line 11:             with lock_a:
+      原因: 反向路径（else 分支）按 lock_b→lock_a 的顺序取锁，与正向路径的 lock_a→lock_b 相反。双线程交错反例：线程 1 以 amount=100 调用，走到 Line 4 获取了 lock_a，正准备在 Line 5 获取 lock_b；此时线程 2 以 amount=-50 调用（同一组锁），走到 Line 10 获取了 lock_b，准备在 Line 11 获取 lock_a。结果：线程 1 持有 A 等 B、线程 2 持有 B 等 A，双方互等形成 ABBA 死锁，两笔转账都永远卡住，违反"任何路径上 lock_a 必须先于 lock_b 获取"的约定。
+
+============================================================================
+场景 C（abba_locks）: fixed 版 + 同一份完整 spec（all_bugs=True）
+============================================================================
+  说明: 修复版消除并发违规，逐块并发检查应全部通过。
+  目标函数: abba_locks_fixed.py（13 行）
+  spec 含 Concurrency-contracts 段: 是
+  切块结果（GRANULARITY=10）：共 1 块
+    块 1: Line 1 ~ Line 13（13 行）
+  --- 逐段检查过程（真实管线，模型实时应答） ---
+    [块 1] 请求模型生成块后条件
+    >>> 等待模型应答（call 6, post_condition）...
+    [块 1] 模型给出的后条件: 两条路径都统一按 lock_a→lock_b 的顺序取锁并完成转账：amount >= 0 时 src 转出 amount、dst 转入 amount；amount < 0 时 dst 转出 -amount、src 转入 -amount；返回前两把锁均已释放
+    [块 1] 请求模型做后条件对照
+    >>> 等待模型应答（call 7, post_implies_spec）...
+    [块 1] 模型判定: MATCH
+    [块 1] 请求模型做concurrency检查
+    >>> 等待模型应答（call 8, property_check）...
+    [块 1] 模型判定: 通过 MATCH
+  --- 结果 ---
+  最终状态: MATCH
+
+############################################################################
+# 案例: check_then_act —— pending 的"检查是否存在再加入"之间没有持锁，两个线程同时通过检查，同一任务被重复登记处理
+############################################################################
+
+============================================================================
+场景 A（check_then_act）: buggy 版 + 旧式 spec（不含 concurrency）
+============================================================================
+  说明: 旧式 spec 只有 signature/pre/post 三个基础字段，并发约定传不到检查里，并发 bug 预期不可见。
+  目标函数: check_then_act.py（11 行）
+  spec 含 Concurrency-contracts 段: 否
+  切块结果（GRANULARITY=10）：共 1 块
+    块 1: Line 1 ~ Line 11（11 行）
+  --- 逐段检查过程（真实管线，模型实时应答） ---
+    [块 1] 请求模型生成块后条件
+    >>> 等待模型应答（call 9, post_condition）...
+    [块 1] 模型给出的后条件: 该段是 while True 事件循环，正常运行期间不返回；每次迭代从 queue 取任务（超时返回 None 则跳过本轮），若 task["id"] 不在 pending 中则先 prepare(task) 再把 id 加入 pending，随后 process(task)；pending 中累积所有已登记的任务 id
+    [块 1] 请求模型做后条件对照
+    >>> 等待模型应答（call 10, post_implies_spec）...
+    [块 1] 模型判定: MATCH
+  --- 结果 ---
+  返回值（非 all_bugs 模式的字符串结果）:
+    The function passes the verification. All code blocks satisfy the specification's post-condition.
+
+============================================================================
+场景 B（check_then_act）: buggy 版 + 完整 spec（含 concurrency，all_bugs=True）
+============================================================================
+  说明: 完整 spec 携带 concurrency 约定，逐块并发检查应发现违规，违规 kind=concurrency。bug: pending 的"检查是否存在再加入"之间没有持锁，两个线程同时通过检查，同一任务被重复登记处理。
+  目标函数: check_then_act.py（11 行）
+  spec 含 Concurrency-contracts 段: 是
+  切块结果（GRANULARITY=10）：共 1 块
+    块 1: Line 1 ~ Line 11（11 行）
+  --- 逐段检查过程（真实管线，模型实时应答） ---
+    [块 1] 请求模型生成块后条件
+    >>> 等待模型应答（call 11, post_condition）...
+    [块 1] 模型给出的后条件: 该段是 while True 事件循环，正常运行期间不返回；每轮迭代：queue.pop 超时返回 None 则 continue，否则检查 task["id"] 是否已在 pending，不在则 prepare(task) 并 pending.add(task["id"])，最后 process(task)
+    [块 1] 请求模型做后条件对照
+    >>> 等待模型应答（call 12, post_implies_spec）...
+    [块 1] 模型判定: MATCH
+    [块 1] 请求模型做concurrency检查
+    >>> 等待模型应答（call 13, property_check）...
+    [块 1] 模型判定: 违反 MISMATCH
+  --- 结果 ---
+  最终状态: MISMATCH
+  违规汇总（all_bugs 模式，共 1 处）:
+    - kind = concurrency
+      触发语句:
+        Line 8:         if task["id"] not in pending:
+        Line 10:             pending.add(task["id"])
+      原因: Line 8 的成员检查和 Line 10 的加入之间没有持 lock（整个函数从未使用 lock），检查与加入不是原子的。双线程交错反例：线程 1 取出 id=7 的任务，执行 Line 8 判断 7 不在 pending 中，刚要执行 Line 9/10 时被切换；线程 2 也取出 id=7 的任务（或同一任务被重复投递），同样执行 Line 8 判断 7 不在 pending 中。结果：两个线程都通过检查，各自执行 prepare 和 pending.add，id=7 的任务被两个线程重复登记并 process 两次，违反"检查再加入必须在同一次持锁内完成"的约定。
+
+============================================================================
+场景 C（check_then_act）: fixed 版 + 同一份完整 spec（all_bugs=True）
+============================================================================
+  说明: 修复版消除并发违规，逐块并发检查应全部通过。
+  目标函数: check_then_act_fixed.py（12 行）
+  spec 含 Concurrency-contracts 段: 是
+  切块结果（GRANULARITY=10）：共 1 块
+    块 1: Line 1 ~ Line 12（12 行）
+  --- 逐段检查过程（真实管线，模型实时应答） ---
+    [块 1] 请求模型生成块后条件
+    >>> 等待模型应答（call 14, post_condition）...
+    [块 1] 模型给出的后条件: 该段是 while True 事件循环，正常运行期间不返回；每轮迭代：queue.pop 超时返回 None 则 continue，否则在同一次 with lock 持锁内原子地完成"检查 task["id"] 是否在 pending、不在则 prepare(task) 并 pending.add(task["id"])"，锁释放后 process(task)
+    [块 1] 请求模型做后条件对照
+    >>> 等待模型应答（call 15, post_implies_spec）...
+    [块 1] 模型判定: MATCH
+    [块 1] 请求模型做concurrency检查
+    >>> 等待模型应答（call 16, property_check）...
+    [块 1] 模型判定: 通过 MATCH
+  --- 结果 ---
+  最终状态: MATCH
+
+############################################################################
+# 案例: lost_update —— stats["count"] += 1 自增未持锁，读-改-写交错导致丢失更新
+############################################################################
+
+============================================================================
+场景 A（lost_update）: buggy 版 + 旧式 spec（不含 concurrency）
+============================================================================
+  说明: 旧式 spec 只有 signature/pre/post 三个基础字段，并发约定传不到检查里，并发 bug 预期不可见。
+  目标函数: lost_update.py（11 行）
+  spec 含 Concurrency-contracts 段: 否
+  切块结果（GRANULARITY=10）：共 1 块
+    块 1: Line 1 ~ Line 11（11 行）
+  --- 逐段检查过程（真实管线，模型实时应答） ---
+    [块 1] 请求模型生成块后条件
+    >>> 等待模型应答（call 17, post_condition）...
+    [块 1] 模型给出的后条件: 该段是 while True 事件循环，正常运行期间不返回；每轮迭代：stream.poll 超时返回 None 或事件为 heartbeat 类型则跳过本轮，否则 handle(ev) 处理事件并把 stats["count"] 加 1；stats["count"] 累计已处理的事件数
+    [块 1] 请求模型做后条件对照
+    >>> 等待模型应答（call 18, post_implies_spec）...
+    [块 1] 模型判定: MATCH
+  --- 结果 ---
+  返回值（非 all_bugs 模式的字符串结果）:
+    The function passes the verification. All code blocks satisfy the specification's post-condition.
+
+============================================================================
+场景 B（lost_update）: buggy 版 + 完整 spec（含 concurrency，all_bugs=True）
+============================================================================
+  说明: 完整 spec 携带 concurrency 约定，逐块并发检查应发现违规，违规 kind=concurrency。bug: stats["count"] += 1 自增未持锁，读-改-写交错导致丢失更新。
+  目标函数: lost_update.py（11 行）
+  spec 含 Concurrency-contracts 段: 是
+  切块结果（GRANULARITY=10）：共 1 块
+    块 1: Line 1 ~ Line 11（11 行）
+  --- 逐段检查过程（真实管线，模型实时应答） ---
+    [块 1] 请求模型生成块后条件
+    >>> 等待模型应答（call 19, post_condition）...
+    [块 1] 模型给出的后条件: 该段是 while True 事件循环，正常运行期间不返回；每轮迭代：poll 超时或 heartbeat 事件跳过本轮，其他事件经 handle(ev) 处理后执行 stats["count"] += 1；stats["count"] 记录已处理事件总数
+    [块 1] 请求模型做后条件对照
+    >>> 等待模型应答（call 20, post_implies_spec）...
+    [块 1] 模型判定: MATCH
+    [块 1] 请求模型做concurrency检查
+    >>> 等待模型应答（call 21, property_check）...
+    [块 1] 模型判定: 违反 MISMATCH
+  --- 结果 ---
+  最终状态: MISMATCH
+  违规汇总（all_bugs 模式，共 1 处）:
+    - kind = concurrency
+      触发语句:
+        Line 11:         stats["count"] += 1
+      原因: Line 11 对共享计数器 stats["count"] 的读-改-写没有持有 lock（函数从未使用 lock），违反"stats 的所有读写必须持有 lock"。双线程交错反例：当前 stats["count"]=5，线程 1 处理完一个事件执行 Line 11，读出 5、尚未写回；线程 2 同时处理完另一个事件也执行 Line 11，同样读出 5；两个线程各自加 1 后都写回 6。结果：实际处理了两个事件，计数只从 5 涨到 6，丢失了一次更新。
+
+============================================================================
+场景 C（lost_update）: fixed 版 + 同一份完整 spec（all_bugs=True）
+============================================================================
+  说明: 修复版消除并发违规，逐块并发检查应全部通过。
+  目标函数: lost_update_fixed.py（12 行）
+  spec 含 Concurrency-contracts 段: 是
+  切块结果（GRANULARITY=10）：共 1 块
+    块 1: Line 1 ~ Line 12（12 行）
+  --- 逐段检查过程（真实管线，模型实时应答） ---
+    [块 1] 请求模型生成块后条件
+    >>> 等待模型应答（call 22, post_condition）...
+    [块 1] 模型给出的后条件: 该段是 while True 事件循环，正常运行期间不返回；每轮迭代：poll 超时或 heartbeat 事件跳过本轮，其他事件经 handle(ev) 处理后在 with lock 持锁内把 stats["count"] 加 1；stats["count"] 记录已处理事件总数
+    [块 1] 请求模型做后条件对照
+    >>> 等待模型应答（call 23, post_implies_spec）...
+    [块 1] 模型判定: MATCH
+    [块 1] 请求模型做concurrency检查
+    >>> 等待模型应答（call 24, property_check）...
+    [块 1] 模型判定: 通过 MATCH
+  --- 结果 ---
+  最终状态: MATCH
+
+############################################################################
+# 案例: publication_order —— 先 ready_flag.set() 再写 config，读者线程看到标志时数据还没写好
+############################################################################
+
+============================================================================
+场景 A（publication_order）: buggy 版 + 旧式 spec（不含 concurrency）
+============================================================================
+  说明: 旧式 spec 只有 signature/pre/post 三个基础字段，并发约定传不到检查里，并发 bug 预期不可见。
+  目标函数: publication_order.py（10 行）
+  spec 含 Concurrency-contracts 段: 否
+  切块结果（GRANULARITY=10）：共 1 块
+    块 1: Line 1 ~ Line 10（10 行）
+  --- 逐段检查过程（真实管线，模型实时应答） ---
+    [块 1] 请求模型生成块后条件
+    >>> 等待模型应答（call 25, post_condition）...
+    [块 1] 模型给出的后条件: 函数返回时：snapshot 已准备好（config.prepare() 的结果，为 None 时回退到 config.defaults()）；ready_flag 已置位（Line 7）；config 已完成 reload 并 apply(snapshot)，即 config 完成写入；并已记录日志
+    [块 1] 请求模型做后条件对照
+    >>> 等待模型应答（call 26, post_implies_spec）...
+    [块 1] 模型判定: MATCH
+  --- 结果 ---
+  返回值（非 all_bugs 模式的字符串结果）:
+    The function passes the verification. All code blocks satisfy the specification's post-condition.
+
+============================================================================
+场景 B（publication_order）: buggy 版 + 完整 spec（含 concurrency，all_bugs=True）
+============================================================================
+  说明: 完整 spec 携带 concurrency 约定，逐块并发检查应发现违规，违规 kind=concurrency。bug: 先 ready_flag.set() 再写 config，读者线程看到标志时数据还没写好。
+  目标函数: publication_order.py（10 行）
+  spec 含 Concurrency-contracts 段: 是
+  切块结果（GRANULARITY=10）：共 1 块
+    块 1: Line 1 ~ Line 10（10 行）
+  --- 逐段检查过程（真实管线，模型实时应答） ---
+    [块 1] 请求模型生成块后条件
+    >>> 等待模型应答（call 27, post_condition）...
+    [块 1] 模型给出的后条件: 函数返回时：snapshot 已准备好（prepare 结果为 None 时回退 defaults）；ready_flag 已在 Line 7 置位；随后 config.reload() 与 config.apply(snapshot) 执行完毕，config 完成写入；日志已记录
+    [块 1] 请求模型做后条件对照
+    >>> 等待模型应答（call 28, post_implies_spec）...
+    [块 1] 模型判定: MATCH
+    [块 1] 请求模型做concurrency检查
+    >>> 等待模型应答（call 29, property_check）...
+    [块 1] 模型判定: 违反 MISMATCH
+  --- 结果 ---
+  最终状态: MISMATCH
+  违规汇总（all_bugs 模式，共 1 处）:
+    - kind = concurrency
+      触发语句:
+        Line 7:     ready_flag.set()
+        Line 8:     config.reload()
+        Line 9:     config.apply(snapshot)
+      原因: Line 7 在 config 写入（Line 8 reload、Line 9 apply）之前就置位 ready_flag，顺序与约定相反。双线程交错反例：线程 1（发布者）执行完 Line 7 ready_flag.set()，正准备执行 Line 8；线程 2（读者）此刻观察到 ready_flag 已置位，立即读取 config——此时 config.reload() 和 config.apply(snapshot) 都还没执行。结果：读者读到的是旧的/未写完的配置数据，违反"必须先完成 config 的写入，再置 ready_flag"的约定。
+
+============================================================================
+场景 C（publication_order）: fixed 版 + 同一份完整 spec（all_bugs=True）
+============================================================================
+  说明: 修复版消除并发违规，逐块并发检查应全部通过。
+  目标函数: publication_order_fixed.py（10 行）
+  spec 含 Concurrency-contracts 段: 是
+  切块结果（GRANULARITY=10）：共 1 块
+    块 1: Line 1 ~ Line 10（10 行）
+  --- 逐段检查过程（真实管线，模型实时应答） ---
+    [块 1] 请求模型生成块后条件
+    >>> 等待模型应答（call 30, post_condition）...
+    [块 1] 模型给出的后条件: 函数返回时：snapshot 已准备好（prepare 结果为 None 时回退 defaults）；config.reload() 与 config.apply(snapshot) 已执行完毕，config 完成全部写入；日志已记录；最后 ready_flag 已置位
+    [块 1] 请求模型做后条件对照
+    >>> 等待模型应答（call 31, post_implies_spec）...
+    [块 1] 模型判定: MATCH
+    [块 1] 请求模型做concurrency检查
+    >>> 等待模型应答（call 32, property_check）...
+    [块 1] 模型判定: 通过 MATCH
+  --- 结果 ---
+  最终状态: MATCH
+
+############################################################################
+# 案例: condvar_wait —— cond.wait() 用 if 不用 while，虚假唤醒后直接 pop 空队列
+############################################################################
+
+============================================================================
+场景 A（condvar_wait）: buggy 版 + 旧式 spec（不含 concurrency）
+============================================================================
+  说明: 旧式 spec 只有 signature/pre/post 三个基础字段，并发约定传不到检查里，并发 bug 预期不可见。
+  目标函数: condvar_wait.py（10 行）
+  spec 含 Concurrency-contracts 段: 否
+  切块结果（GRANULARITY=10）：共 1 块
+    块 1: Line 1 ~ Line 10（10 行）
+  --- 逐段检查过程（真实管线，模型实时应答） ---
+    [块 1] 请求模型生成块后条件
+    >>> 等待模型应答（call 33, post_condition）...
+    [块 1] 模型给出的后条件: 该段是 while True 消费循环，正常运行期间不返回；每轮迭代：在 with cond 持锁内，若 queue 为空则 cond.wait() 等待一次，wait 返回后（无论是否复查）执行 queue.pop() 取出 item，释放锁后 process(item) 并 mark_done(item)
+    [块 1] 请求模型做后条件对照
+    >>> 等待模型应答（call 34, post_implies_spec）...
+    [块 1] 模型判定: MATCH
+  --- 结果 ---
+  返回值（非 all_bugs 模式的字符串结果）:
+    The function passes the verification. All code blocks satisfy the specification's post-condition.
+
+============================================================================
+场景 B（condvar_wait）: buggy 版 + 完整 spec（含 concurrency，all_bugs=True）
+============================================================================
+  说明: 完整 spec 携带 concurrency 约定，逐块并发检查应发现违规，违规 kind=concurrency。bug: cond.wait() 用 if 不用 while，虚假唤醒后直接 pop 空队列。
+  目标函数: condvar_wait.py（10 行）
+  spec 含 Concurrency-contracts 段: 是
+  切块结果（GRANULARITY=10）：共 1 块
+    块 1: Line 1 ~ Line 10（10 行）
+  --- 逐段检查过程（真实管线，模型实时应答） ---
+    [块 1] 请求模型生成块后条件
+    >>> 等待模型应答（call 35, post_condition）...
+    [块 1] 模型给出的后条件: 该段是 while True 消费循环，正常运行期间不返回；每轮迭代在 with cond 持锁内：queue 为空则 cond.wait() 等待一次，随后直接 queue.pop() 取出 item（不复查队列），锁释放后 process(item)、mark_done(item)
+    [块 1] 请求模型做后条件对照
+    >>> 等待模型应答（call 36, post_implies_spec）...
+    [块 1] 模型判定: MATCH
+    [块 1] 请求模型做concurrency检查
+    >>> 等待模型应答（call 37, property_check）...
+    [块 1] 模型判定: 违反 MISMATCH
+  --- 结果 ---
+  最终状态: MISMATCH
+  违规汇总（all_bugs 模式，共 1 处）:
+    - kind = concurrency
+      触发语句:
+        Line 6:             if not queue:
+        Line 7:                 cond.wait()
+        Line 8:             item = queue.pop()
+      原因: Line 6 用 if 只做一次检查，cond.wait() 返回后没有循环复查就直接在 Line 8 pop。双线程交错反例：queue 为空，线程 1 在 Line 7 等待；生产者放入一个元素并 notify_all，线程 1 被唤醒但还没重新拿到锁；线程 2（另一个消费者）先抢到锁，把这唯一的元素 pop 走并释放锁；线程 1 随后拿到锁从 wait 返回，因 if 不会复查，直接在 Line 8 对空队列 pop。结果：pop 空队列抛出 IndexError（或虚假唤醒时同样如此），违反"wait 返回后必须在循环中复查条件"的约定。
+
+============================================================================
+场景 C（condvar_wait）: fixed 版 + 同一份完整 spec（all_bugs=True）
+============================================================================
+  说明: 修复版消除并发违规，逐块并发检查应全部通过。
+  目标函数: condvar_wait_fixed.py（10 行）
+  spec 含 Concurrency-contracts 段: 是
+  切块结果（GRANULARITY=10）：共 1 块
+    块 1: Line 1 ~ Line 10（10 行）
+  --- 逐段检查过程（真实管线，模型实时应答） ---
+    [块 1] 请求模型生成块后条件
+    >>> 等待模型应答（call 38, post_condition）...
+    [块 1] 模型给出的后条件: 该段是 while True 消费循环，正常运行期间不返回；每轮迭代在 with cond 持锁内：用 while 循环复查，queue 为空就 cond.wait() 直到 queue 非空，然后 queue.pop() 取出 item，锁释放后 process(item)、mark_done(item)
+    [块 1] 请求模型做后条件对照
+    >>> 等待模型应答（call 39, post_implies_spec）...
+    [块 1] 模型判定: MATCH
+    [块 1] 请求模型做concurrency检查
+    >>> 等待模型应答（call 40, property_check）...
+    [块 1] 模型判定: 通过 MATCH
+  --- 结果 ---
+  最终状态: MATCH
+
+############################################################################
+# 案例: blocking_wait —— 在唯一的执行器线程上原地等 future，而 future 的完成回调也需要这个线程调度，死锁
+############################################################################
+
+============================================================================
+场景 A（blocking_wait）: buggy 版 + 旧式 spec（不含 concurrency）
+============================================================================
+  说明: 旧式 spec 只有 signature/pre/post 三个基础字段，并发约定传不到检查里，并发 bug 预期不可见。
+  目标函数: blocking_wait.py（10 行）
+  spec 含 Concurrency-contracts 段: 否
+  切块结果（GRANULARITY=10）：共 1 块
+    块 1: Line 1 ~ Line 10（10 行）
+  --- 逐段检查过程（真实管线，模型实时应答） ---
+    [块 1] 请求模型生成块后条件
+    >>> 等待模型应答（call 41, post_condition）...
+    [块 1] 模型给出的后条件: 函数返回时：已通过 client.call_async 发起异步请求得到 future，原地轮询直到 future 完成，取出 result 追加到 results，并记录日志；即请求结果已追加到 results
+    [块 1] 请求模型做后条件对照
+    >>> 等待模型应答（call 42, post_implies_spec）...
+    [块 1] 模型判定: MATCH
+  --- 结果 ---
+  返回值（非 all_bugs 模式的字符串结果）:
+    The function passes the verification. All code blocks satisfy the specification's post-condition.
+
+============================================================================
+场景 B（blocking_wait）: buggy 版 + 完整 spec（含 concurrency，all_bugs=True）
+============================================================================
+  说明: 完整 spec 携带 concurrency 约定，逐块并发检查应发现违规，违规 kind=concurrency。bug: 在唯一的执行器线程上原地等 future，而 future 的完成回调也需要这个线程调度，死锁。
+  目标函数: blocking_wait.py（10 行）
+  spec 含 Concurrency-contracts 段: 是
+  切块结果（GRANULARITY=10）：共 1 块
+    块 1: Line 1 ~ Line 10（10 行）
+  --- 逐段检查过程（真实管线，模型实时应答） ---
+    [块 1] 请求模型生成块后条件
+    >>> 等待模型应答（call 43, post_condition）...
+    [块 1] 模型给出的后条件: 函数返回时：已发起异步请求并原地等到 future 完成，future.result() 的结果已追加到 results 且已记录日志
+    [块 1] 请求模型做后条件对照
+    >>> 等待模型应答（call 44, post_implies_spec）...
+    [块 1] 模型判定: MATCH
+    [块 1] 请求模型做concurrency检查
+    >>> 等待模型应答（call 45, property_check）...
+    [块 1] 模型判定: 违反 MISMATCH
+  --- 结果 ---
+  最终状态: MISMATCH
+  违规汇总（all_bugs 模式，共 1 处）:
+    - kind = concurrency
+      触发语句:
+        Line 6:     while not future.done():
+        Line 7:         sleep(0.01)
+      原因: Line 6-7 在回调内原地轮询等待 future 完成，而本回调就运行在唯一的执行器线程上。双线程交错反例（线程 1=执行器线程，线程 2=服务应答线程）：线程 1 执行 on_timer，在 Line 4 发出异步请求后进入 Line 6 的 while 循环反复 sleep，独占着执行器线程不放；线程 2 已收到服务应答，把"标记 future 完成"的回调投递到执行器线程的任务队列，但该线程被 on_timer 的循环占住，永远轮不到这个完成回调执行。结果：future.done() 永远为 False，while 循环永远转圈，执行器线程死锁，后续所有回调（包括定时器本身）全部停摆，违反"回调内不得原地等待 future 完成"的约定。
+
+============================================================================
+场景 C（blocking_wait）: fixed 版 + 同一份完整 spec（all_bugs=True）
+============================================================================
+  说明: 修复版消除并发违规，逐块并发检查应全部通过。
+  目标函数: blocking_wait_fixed.py（9 行）
+  spec 含 Concurrency-contracts 段: 是
+  切块结果（GRANULARITY=10）：共 1 块
+    块 1: Line 1 ~ Line 9（9 行）
+  --- 逐段检查过程（真实管线，模型实时应答） ---
+    [块 1] 请求模型生成块后条件
+    >>> 等待模型应答（call 46, post_condition）...
+    [块 1] 模型给出的后条件: 函数返回时：已通过 client.call_async 发起异步请求并注册完成回调 _on_done；future 完成时 _on_done 会被调度执行，把 fut.result() 追加到 results 并记录日志；on_timer 自身立即返回、不占用执行器线程
+    [块 1] 请求模型做后条件对照
+    >>> 等待模型应答（call 47, post_implies_spec）...
+    [块 1] 模型判定: MATCH
+    [块 1] 请求模型做concurrency检查
+    >>> 等待模型应答（call 48, property_check）...
+    [块 1] 模型判定: 通过 MATCH
+  --- 结果 ---
+  最终状态: MATCH
+
+================ 汇总 ================
+案例                无 concurrency    有 concurrency（buggy）   修复版
+abba_locks          漏报（通过）      MISMATCH                  MATCH
+check_then_act      漏报（通过）      MISMATCH                  MATCH
+lost_update         漏报（通过）      MISMATCH                  MATCH
+publication_order   漏报（通过）      MISMATCH                  MATCH
+condvar_wait        漏报（通过）      MISMATCH                  MATCH
+blocking_wait       漏报（通过）      MISMATCH                  MATCH
+
+检出统计：6 个已知并发漏洞，无 concurrency 字段时检出 0 个，有 concurrency 字段时检出 6 个；6 个修复版通过 6 个。
+基准运行完成。

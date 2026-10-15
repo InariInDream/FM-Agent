@@ -1,0 +1,6 @@
+{
+  "signature": "lease_buffer(pool)",
+  "pre_condition": "pool 已初始化且有空闲缓冲区",
+  "post_condition": "返回一个可用的缓冲区对象",
+  "resources": "返回的缓冲区由调用方负责在同一轮迭代内 pool.release() 释放"
+}

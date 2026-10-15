@@ -1,0 +1,73 @@
+****************************************************************************
+  不变式推理 before/after 演示 —— stream_processor（buffer 容量不变式）
+  LLM 判断由确定性桩替代，演示的是机制链路；判断质量仍取决于真实模型。
+  LLM judgments are stubbed deterministically; this demos the mechanism,
+  not model quality.
+****************************************************************************
+
+============================================================================
+场景 A（before）: buggy 代码 + 不含 invariants 的旧式 spec
+============================================================================
+  说明: 旧式 spec 没有 Invariants 段，reasoner 不会做逐块不变式检查；该函数没有显式 return，只剩最后一块『末尾隐式返回』的后条件检查，buffer 超限 bug 完全不可见。
+  目标函数: stream_processor.py（37 行）
+  spec 含 Invariants 段: 否（旧式 spec）
+  切块结果（GRANULARITY=10）：共 3 块
+    块 1: Line 1 ~ Line 10（10 行）
+    块 2: Line 11 ~ Line 20（10 行）
+    块 3: Line 21 ~ Line 37（17 行）
+  --- 逐块推理序列（真实 reasoner 管线，LLM 判断为桩） ---
+    [块 1] 生成块后条件（桩）: 已初始化空 buffer 与计数器并进入事件循环；此刻 len(buffer) == 0，满足容量上限
+    [块 2] 生成块后条件（桩）: 已拉取一个 batch 并入 buffer，等待逐条处理；若收到 shutdown 则跳出循环
+    [块 3] 生成块后条件（桩）: 本 batch 已处理完毕（或走到退出路径）；退出前 buffer 已排空并 flush 到 sink
+    [块 3] 后条件蕴含检查（桩，终止块/末尾隐式返回）→ 通过 PASS
+  --- 结果 ---
+  返回值（非 all_bugs 模式的字符串结果）:
+    The function passes the verification. All code blocks satisfy the specification's post-condition.
+
+============================================================================
+场景 B（after）: buggy 代码 + 含 invariants 的 spec
+============================================================================
+  说明: spec 声明『任意时刻 len(buffer) <= CAPACITY』后，每个块都要过一遍不变式检查；all_bugs=True 汇总全部违规。
+  目标函数: stream_processor.py（37 行）
+  spec 含 Invariants 段: 是
+  切块结果（GRANULARITY=10）：共 3 块
+    块 1: Line 1 ~ Line 10（10 行）
+    块 2: Line 11 ~ Line 20（10 行）
+    块 3: Line 21 ~ Line 37（17 行）
+  --- 逐块推理序列（真实 reasoner 管线，LLM 判断为桩） ---
+    [块 1] 生成块后条件（桩）: 已初始化空 buffer 与计数器并进入事件循环；此刻 len(buffer) == 0，满足容量上限
+    [块 1] 不变式检查（玩具桩）: 块内无 buffer 增长操作 → 保持 PASS
+    [块 2] 生成块后条件（桩）: 已拉取一个 batch 并入 buffer，等待逐条处理；若收到 shutdown 则跳出循环
+    [块 2] 不变式检查（玩具桩）: extend 前无容量守卫 → 违反 VIOLATION
+    [块 3] 生成块后条件（桩）: 本 batch 已处理完毕（或走到退出路径）；退出前 buffer 已排空并 flush 到 sink
+    [块 3] 后条件蕴含检查（桩，终止块/末尾隐式返回）→ 通过 PASS
+    [块 3] 不变式检查（玩具桩）: 块内无 buffer 增长操作 → 保持 PASS
+  --- 结果 ---
+  最终状态: MISMATCH
+  违规汇总（all_bugs 模式，共 1 处）:
+    - kind = invariant
+      触发语句:
+        Line 20:         buffer.extend(batch)
+      原因: 该块调用 buffer.extend(batch) 前没有任何容量守卫（未检查 CAPACITY，也未先 flush 排空）：突发 batch 会让 len(buffer) 在并入后瞬时超过 CAPACITY = 8，违反不变式『任意时刻 len(buffer) <= CAPACITY』。
+
+============================================================================
+场景 C（after 对照）: fixed 代码 + 同一份含 invariants 的 spec
+============================================================================
+  说明: 修复版在 extend 前检查 CAPACITY 并在空间不足时先 flush，逐块不变式检查全部通过。
+  目标函数: stream_processor_fixed.py（36 行）
+  spec 含 Invariants 段: 是
+  切块结果（GRANULARITY=10）：共 3 块
+    块 1: Line 1 ~ Line 10（10 行）
+    块 2: Line 11 ~ Line 20（10 行）
+    块 3: Line 21 ~ Line 36（16 行）
+  --- 逐块推理序列（真实 reasoner 管线，LLM 判断为桩） ---
+    [块 1] 生成块后条件（桩）: 已初始化空 buffer 与计数器并进入事件循环；此刻 len(buffer) == 0，满足容量上限
+    [块 1] 不变式检查（玩具桩）: 块内无 buffer 增长操作 → 保持 PASS
+    [块 2] 生成块后条件（桩）: 已拉取一个 batch 并入 buffer，等待逐条处理；若收到 shutdown 则跳出循环
+    [块 2] 不变式检查（玩具桩）: 发现容量守卫 CAPACITY/flush → 保持 PASS
+    [块 3] 生成块后条件（桩）: 本 batch 已处理完毕（或走到退出路径）；退出前 buffer 已排空并 flush 到 sink
+    [块 3] 后条件蕴含检查（桩，终止块/末尾隐式返回）→ 通过 PASS
+    [块 3] 不变式检查（玩具桩）: 块内无 buffer 增长操作 → 保持 PASS
+  --- 结果 ---
+  最终状态: MATCH
+

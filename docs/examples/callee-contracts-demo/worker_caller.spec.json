@@ -1,0 +1,6 @@
+{
+  "signature": "run_worker(queue, pool)",
+  "pre_condition": "queue、pool 已初始化可用",
+  "post_condition": "正常运行期间不返回（while True 事件循环），无返回路径",
+  "resources": "每次迭代从 pool 获取的缓冲区，在该迭代内通过 pool.release() 归还，不跨迭代持有"
+}

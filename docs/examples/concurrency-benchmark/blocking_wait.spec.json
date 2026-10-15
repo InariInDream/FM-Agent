@@ -1,0 +1,6 @@
+{
+  "signature": "on_timer(client, results)",
+  "pre_condition": "client 的异步服务已可用；results 为共享结果列表；本回调运行在唯一的执行器线程上",
+  "post_condition": "请求结果追加到 results",
+  "concurrency": "本回调运行在唯一的执行器线程上，future 的完成回调也需要该线程调度；回调内不得原地等待 future 完成"
+}

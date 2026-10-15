@@ -1,0 +1,115 @@
+****************************************************************************
+  不变式推理 before/after 演示 —— stream_processor（buffer 容量不变式）
+  模型判断由外部大模型实时给出（经 live/ 文件交换，无需 API key）。
+****************************************************************************
+
+============================================================================
+场景 A（before）: buggy 代码 + 不含 invariants 的旧式 spec
+============================================================================
+  说明: 旧式 spec 没有 Invariants 段，reasoner 不会做逐段不变式检查；该函数没有显式 return，只剩最后一段『末尾隐式返回』的后条件检查，buffer 超限 bug 完全不可见。
+  目标函数: stream_processor.py（37 行）
+  spec 含 Invariants 段: 否（旧式 spec）
+  切块结果（GRANULARITY=10）：共 3 块
+    块 1: Line 1 ~ Line 10（10 行）
+    块 2: Line 11 ~ Line 20（10 行）
+    块 3: Line 21 ~ Line 37（17 行）
+  --- 逐段检查过程（真实管线，模型实时应答） ---
+    [块 1] 请求模型生成块后条件
+    >>> 等待模型应答（call 1, post_condition）...
+    [块 1] 模型给出的后条件: 常量 CAPACITY 被赋值为 8；函数 run_stream_processor 被定义（未执行）。source、sink、metrics、buffer 均未变化：该段只包含模块级常量定义和函数定义，没有任何调用语句执行，buffer 未被创建、仍为空，processed 也未赋值。不存在多个执行路径。
+    [块 2] 请求模型生成块后条件
+    >>> 等待模型应答（call 2, post_condition）...
+    [块 2] 模型给出的后条件: 执行进入该段后：dropped 被赋值为 0，随后进入 while True 无限循环，该段不会正常执行完毕（没有 break/return，循环不终止）。循环每次迭代的中间状态为：先调用 metrics.heartbeat()，再 batch = source.poll(timeout=0.5)。路径一：batch 为 None 时 continue，buffer、dropped、processed 不变，继续下一轮。路径二：batch 非 None 时执行 buffer.extend(batch)，由于未检查剩余容量，只要 len(buffer) + len(batch) > 8（例如空 buffer 收到 9 个元素的大 batch），len(buffer) 就会超过 CAPACITY=8，不变式被瞬时破坏；否则 len(buffer) <= 8 仍成立。CAPACITY 恒为 8，processed 保持函数开始时的 0（尚未到赋值行），source/sink/metrics 连接保持可用。
+    [块 3] 请求模型生成块后条件
+    >>> 等待模型应答（call 3, post_condition）...
+    [块 3] 模型给出的后条件: 该段为外层 while True 循环体的后半部分，两条路径：路径一（source.shutdown_requested() 为假，Line 23 不执行 break）：先执行 metrics.gauge("buffer_len", len(buffer))；随后内层 while buffer 把 buffer 逐条 pop(0) 排空——type 为 "heartbeat" 的元素直接丢弃不计数；transform(item) 抛 ValueError 的元素 dropped += 1 并跳过；其余元素经 sink.emit(result) 发送且 processed += 1。内层循环结束时 buffer 必为空（len(buffer) == 0），即使之前 extend 曾使其超过 CAPACITY=8，此处也恢复满足不变式。最后 metrics.counter("processed", processed) 上报，然后回到外层循环开头重复，不会离开函数。路径二（shutdown_requested() 为真）：在 gauge 之后立即 break，buffer 保持进入该段时的内容未排空（可能非空甚至超过 8），随后执行 flush(buffer, sink) 并隐式 return（返回 None），函数结束，processed/dropped 保持当时的累计值。CAPACITY 恒为 8。
+    [块 3] 请求模型做后条件对照
+    >>> 等待模型应答（call 4, post_implies_spec）...
+    [块 3] 模型判定: MATCH
+  --- 结果 ---
+  返回值（非 all_bugs 模式的字符串结果）:
+    The function passes the verification. All code blocks satisfy the specification's post-condition.
+
+============================================================================
+场景 B（after）: buggy 代码 + 含 invariants 的 spec
+============================================================================
+  说明: spec 声明『任意时刻 len(buffer) <= CAPACITY』后，每段代码都要过一遍不变式检查；all_bugs=True 汇总全部违规。
+  目标函数: stream_processor.py（37 行）
+  spec 含 Invariants 段: 是
+  切块结果（GRANULARITY=10）：共 3 块
+    块 1: Line 1 ~ Line 10（10 行）
+    块 2: Line 11 ~ Line 20（10 行）
+    块 3: Line 21 ~ Line 37（17 行）
+  --- 逐段检查过程（真实管线，模型实时应答） ---
+    [块 1] 请求模型生成块后条件
+    >>> 等待模型应答（call 5, post_condition）...
+    [块 1] 模型给出的后条件: 常量 CAPACITY 被赋值为 8；函数 run_stream_processor 被定义（未执行）。source、sink、metrics、buffer 均未变化：该段只包含模块级常量定义和函数定义，没有任何调用语句执行，buffer 未被创建、仍为空，processed 也未赋值。不存在多个执行路径。
+    [块 1] 请求模型做不变式保持检查
+    >>> 等待模型应答（call 6, invariant_check）...
+    [块 1] 模型判定: 保持 MATCH
+    [块 2] 请求模型生成块后条件
+    >>> 等待模型应答（call 7, post_condition）...
+    [块 2] 模型给出的后条件: 执行进入该段后：dropped 被赋值为 0，随后进入 while True 无限循环，该段不会正常执行完毕（没有 break/return，循环不终止）。循环每次迭代的中间状态为：先调用 metrics.heartbeat()，再 batch = source.poll(timeout=0.5)。路径一：batch 为 None 时 continue，buffer、dropped、processed 不变，继续下一轮。路径二：batch 非 None 时执行 buffer.extend(batch)，由于未检查剩余容量，只要 len(buffer) + len(batch) > 8（例如空 buffer 收到 9 个元素的大 batch），len(buffer) 就会超过 CAPACITY=8，不变式被瞬时破坏；否则 len(buffer) <= 8 仍成立。CAPACITY 恒为 8，processed 保持函数开始时的 0（尚未到赋值行），source/sink/metrics 连接保持可用。
+    [块 2] 请求模型做不变式保持检查
+    >>> 等待模型应答（call 8, invariant_check）...
+    [块 2] 模型判定: 违反 MISMATCH
+    [块 3] 请求模型生成块后条件
+    >>> 等待模型应答（call 9, post_condition）...
+    [块 3] 模型给出的后条件: 该段为外层 while True 循环体的后半部分，两条路径：路径一（source.shutdown_requested() 为假，Line 23 不执行 break）：先执行 metrics.gauge("buffer_len", len(buffer))；随后内层 while buffer 把 buffer 逐条 pop(0) 排空——type 为 "heartbeat" 的元素直接丢弃不计数；transform(item) 抛 ValueError 的元素 dropped += 1 并跳过；其余元素经 sink.emit(result) 发送且 processed += 1。内层循环结束时 buffer 必为空（len(buffer) == 0），即使之前 extend 曾使其超过 CAPACITY=8，此处也恢复满足不变式。最后 metrics.counter("processed", processed) 上报，然后回到外层循环开头重复，不会离开函数。路径二（shutdown_requested() 为真）：在 gauge 之后立即 break，buffer 保持进入该段时的内容未排空（可能非空甚至超过 8），随后执行 flush(buffer, sink) 并隐式 return（返回 None），函数结束，processed/dropped 保持当时的累计值。CAPACITY 恒为 8。
+    [块 3] 请求模型做后条件对照
+    >>> 等待模型应答（call 10, post_implies_spec）...
+    [块 3] 模型判定: MATCH
+    [块 3] 请求模型做不变式保持检查
+    >>> 等待模型应答（call 11, invariant_check）...
+    [块 3] 模型判定: 保持 MATCH
+  --- 结果 ---
+  最终状态: MISMATCH
+  违规汇总（all_bugs 模式，共 1 处）:
+    - kind = invariant
+      触发语句:
+        Line 20:         buffer.extend(batch)
+      原因: 该段在并入 batch 前没有检查剩余容量。假设进入该段时不变式成立（len(buffer) <= 8），仍可能被破坏：反例一（单个大 batch 超容量）：buffer 为空（len=0），source.poll 返回含 9 个元素的 batch，extend 后 len(buffer)=9 > CAPACITY=8。反例二（累计超容量）：buffer 中已有 5 个未处理元素（不变式成立），收到含 4 个元素的 batch，extend 后 len(buffer)=9 > 8。违反发生在 extend 之后、后续逐条 pop 之前的窗口期。
+
+============================================================================
+场景 C（after 对照）: fixed 代码 + 同一份含 invariants 的 spec
+============================================================================
+  说明: 修复版在 extend 前检查剩余容量、空间不足时先 flush，单个超大 batch 分段处理；逐段不变式检查全部通过。
+  目标函数: stream_processor_fixed.py（43 行）
+  spec 含 Invariants 段: 是
+  切块结果（GRANULARITY=10）：共 4 块
+    块 1: Line 1 ~ Line 10（10 行）
+    块 2: Line 11 ~ Line 20（10 行）
+    块 3: Line 21 ~ Line 30（10 行）
+    块 4: Line 31 ~ Line 43（13 行）
+  --- 逐段检查过程（真实管线，模型实时应答） ---
+    [块 1] 请求模型生成块后条件
+    >>> 等待模型应答（call 12, post_condition）...
+    [块 1] 模型给出的后条件: 常量 CAPACITY 被赋值为 8；函数 run_stream_processor 被定义（未执行）。source、sink、metrics、buffer 均未变化：该段只包含模块级常量定义和函数定义，没有任何调用语句执行，buffer 未被创建、仍为空，processed 也未赋值。不存在多个执行路径。
+    [块 1] 请求模型做不变式保持检查
+    >>> 等待模型应答（call 13, invariant_check）...
+    [块 1] 模型判定: 保持 MATCH
+    [块 2] 请求模型生成块后条件
+    >>> 等待模型应答（call 14, post_condition）...
+    [块 2] 模型给出的后条件: 执行进入该段后：dropped 被赋值为 0，随后进入 while True 无限循环，该段自身不会正常执行完毕（循环无 break/return，本段到 Line 20 的注释行为止，后续的切段与 extend 在下一代码段）。每次迭代的中间状态：先 metrics.heartbeat()，再 batch = source.poll(timeout=0.5)。路径一：batch 为 None 时 continue，buffer、dropped、processed 不变，进入下一轮。路径二：batch 非 None 时检查 len(batch) > CAPACITY - len(buffer)（即 8 - len(buffer)）：条件成立则调用 flush(buffer, sink)，buffer 被排空，len(buffer) 变为 0（不变式保持成立）；条件不成立（len(batch) + len(buffer) <= 8）则 buffer 不变。本段结束时 buffer 要么未变（len(buffer) <= 8），要么刚被排空为 0；CAPACITY 恒为 8，processed 保持 0（尚未到赋值行），source/sink/metrics 保持可用。
+    [块 2] 请求模型做不变式保持检查
+    >>> 等待模型应答（call 15, invariant_check）...
+    [块 2] 模型判定: 保持 MATCH
+    [块 3] 请求模型生成块后条件
+    >>> 等待模型应答（call 16, post_condition）...
+    [块 3] 模型给出的后条件: 进入本段时 batch 非 None，buffer 有两种可能：未 flush（len(batch) <= 8 - len(buffer)），或刚被 flush 排空（len(buffer) == 0，此时 batch 可能任意大）。本段执行：路径一（len(batch) <= 8）：while 循环体不执行，直接 buffer.extend(batch)；结合上一段的检查，extend 后 len(buffer) <= 8 恒成立。路径二（len(batch) > 8，此时必有 len(buffer)==0）：while 每次迭代切出 batch 前 8 个元素作为 chunk，buffer.extend(chunk) 使 len(buffer)=8（恰好不超上限），随后 flush(buffer, sink) 立即排空回 0；重复直至 len(batch) <= 8，退出循环后 buffer.extend(batch)，len(buffer) = len(batch) <= 8。两条路径下任意中间时刻 len(buffer) <= CAPACITY=8，不变式始终成立。之后 metrics.gauge 上报 buffer_len。随后分两个出口：若 source.shutdown_requested() 为真则 Line 29 break，buffer 保持当前内容（<=8），控制流离开循环去执行段外的 flush 与隐式 return；为假则进入 Line 30 的内层 while buffer 排空循环（后续语句在下一段），processed/dropped 此刻仍为 0（本段未修改），CAPACITY 恒为 8。
+    [块 3] 请求模型做不变式保持检查
+    >>> 等待模型应答（call 17, invariant_check）...
+    [块 3] 模型判定: 保持 MATCH
+    [块 4] 请求模型生成块后条件
+    >>> 等待模型应答（call 18, post_condition）...
+    [块 4] 模型给出的后条件: 该段是外层 while True 循环体内层排空循环的循环体及函数收尾，两条路径：路径一（正常排空，未触发 shutdown）：内层 while buffer 逐条 pop(0) 直到 buffer 为空——type 为 "heartbeat" 的元素直接丢弃不计数；transform(item) 抛 ValueError 的元素 dropped += 1 并跳过；其余元素经 sink.emit(result) 发送且 processed += 1。内层循环结束时必有 len(buffer) == 0，不变式保持成立。随后 metrics.counter("processed", processed) 上报，控制流回到外层循环开头重复，不离开函数。路径二（上一段 Line 29 已 break）：跳过排空循环，直接执行 Line 43 flush(buffer, sink) 处理 buffer 中剩余元素（此时 len(buffer) <= 8），随后隐式 return（返回 None），函数结束，processed/dropped 保持当时的累计值。CAPACITY 恒为 8，source/sink/metrics 保持可用。
+    [块 4] 请求模型做后条件对照
+    >>> 等待模型应答（call 19, post_implies_spec）...
+    [块 4] 模型判定: MATCH
+    [块 4] 请求模型做不变式保持检查
+    >>> 等待模型应答（call 20, invariant_check）...
+    [块 4] 模型判定: 保持 MATCH
+  --- 结果 ---
+  最终状态: MATCH
+
+全部场景完成。

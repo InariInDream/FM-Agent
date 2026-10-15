@@ -1,0 +1,7 @@
+{
+  "signature": "run_task_worker(queue, pool, lock_a, lock_b, cache)",
+  "pre_condition": "queue、pool、lock_a、lock_b 已初始化可用；cache 为空 dict；常量 MAX_CACHE = 64 是 cache 的容量上限",
+  "post_condition": "正常运行期间不返回（while True 事件循环），无返回路径",
+  "resources": "每次迭代从 pool.acquire() 获取的缓冲区，在该迭代内要么 pool.release() 释放、要么移交 cache 管理；cache 中的条目数任意时刻不超过 MAX_CACHE = 64，不跨迭代无界增长",
+  "ordering": "任何执行路径上 lock_a 必须先于 lock_b 获取；禁止先 lock_b 后 lock_a 的相反顺序"
+}

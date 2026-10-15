@@ -1,0 +1,6 @@
+{
+  "signature": "publish(config, ready_flag)",
+  "pre_condition": "config 可写、ready_flag 已初始化且未置位；读者线程正在等待 ready_flag",
+  "post_condition": "config 完成写入且 ready_flag 已置位",
+  "concurrency": "读者线程看到 ready_flag 置位后会立即读取 config；必须先完成 config 的写入，再置 ready_flag"
+}

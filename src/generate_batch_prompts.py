@@ -107,11 +107,21 @@ def extract_spec_block(filepath: Path) -> Optional[str]:
     if not isinstance(spec, dict):
         return None
 
-    return (
+    text = (
         f"{spec.get('signature', '')}\n\n"
         f"Pre-condition:\n{spec.get('pre_condition', '')}\n\n"
         f"Post-condition:\n{spec.get('post_condition', '')}"
     )
+    for key, label in (
+        ("invariants", "Invariants"),
+        ("resources", "Resource-contracts"),
+        ("ordering", "Ordering-constraints"),
+        ("concurrency", "Concurrency-contracts"),
+    ):
+        value = spec.get(key)
+        if value:
+            text += f"\n\n{label}:\n{value}"
+    return text
 
 
 def extract_info_block(filepath: Path) -> Optional[dict]:
@@ -278,6 +288,15 @@ def build_prompt(
                     f"  Pre-condition: {entry.get('pre_condition', '')}\n"
                     f"  Post-condition: {entry.get('post_condition', '')}"
                 )
+                for key, label in (
+                    ("invariants", "Invariants"),
+                    ("resources", "Resource-contracts"),
+                    ("ordering", "Ordering-constraints"),
+                    ("concurrency", "Concurrency-contracts"),
+                ):
+                    value = entry.get(key)
+                    if value:
+                        entry_text += f"\n  {label}: {value}"
                 caller_expectations.setdefault(fn_name, []).append(
                     (caller_name, entry_text)
                 )
@@ -353,6 +372,28 @@ def build_prompt(
         "continuously while the function runs. Add it only for non-terminating/"
         "long-running functions (event loops, server accept loops, stream "
         "processing, retry loops); ordinary terminating functions omit it."
+    )
+    lines.append(
+        "Optional field: `\"resources\": \"...\"` — resource/memory contracts: "
+        "every acquisition (memory, lock, handle, connection) is released on "
+        "all paths, nothing accumulates without bound across loop iterations, "
+        "nothing is used after release. Add it only for functions with "
+        "resource/memory concerns."
+    )
+    lines.append(
+        "Optional field: `\"ordering\": \"...\"` — required ordering between "
+        "named operations/events (e.g. shared state accessed only while "
+        "holding the lock; two locks acquired in a fixed order). Add it only "
+        "when such ordering matters. Ordinary functions need none of the "
+        "optional fields."
+    )
+    lines.append(
+        "Optional field: `\"concurrency\": \"...\"` — contracts that must hold "
+        "when the function runs concurrently with other threads on the same "
+        "shared state (e.g. a check-then-act sequence completed while holding "
+        "the lock; every read/write of a shared variable holding lock L; data "
+        "written before the ready flag is set). Add it only for functions "
+        "that access shared state and may be called from multiple threads."
     )
     lines.append("")
     lines.append("`<function-file>.info.json`:")

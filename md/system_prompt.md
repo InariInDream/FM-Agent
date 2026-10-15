@@ -72,7 +72,10 @@ source file.
   "signature": "<FunctionName>(<params>) -> <ReturnType>",
   "pre_condition": "<what must hold before the call>",
   "post_condition": "<what the function guarantees after return>",
-  "invariants": "<optional: properties that must hold continuously while the function runs>"
+  "invariants": "<optional: properties that must hold continuously while the function runs>",
+  "resources": "<optional: resource/memory contracts — every acquisition is released on all paths, no leaks, no use-after-release>",
+  "ordering": "<optional: required ordering between named operations/events, e.g. lock held before shared-state access>",
+  "concurrency": "<optional: contracts that must hold under concurrent execution, e.g. a check-then-act sequence on shared state completed while holding the lock>"
 }
 ```
 
@@ -83,6 +86,23 @@ iteration or event-handling cycle, and `post_condition` only describes the
 return paths that actually exist. Ordinary terminating functions do not need
 `invariants`.
 
+`resources` is optional and only needed for functions with resource/memory
+concerns: it states that every acquisition (memory, lock, handle, connection)
+has a matching release on all paths, that nothing accumulates without bound
+across loop iterations, and that nothing is used after release.
+
+`ordering` is optional and only needed when the function must respect an
+ordering between named operations or events (for example, accessing shared
+state only while holding a lock, or acquiring two locks in a fixed order).
+
+`concurrency` is optional and only needed when the function accesses shared
+state and may be called concurrently from multiple threads: it states
+contracts that must hold under every interleaving with other threads (for
+example, a check-then-act sequence on a shared collection completed while
+holding the lock, every read/write of a shared variable holding lock L, or
+data written before the ready flag that publishes it). Ordinary functions
+need none of the four optional fields.
+
 **`<function-file>.info.json`** — the expected specs of the function's callees:
 
 ```json
@@ -92,11 +112,22 @@ return paths that actually exist. Ordinary terminating functions do not need
       "name": "<callee_name>",
       "signature": "<callee_name>(<params>) -> <ReturnType>",
       "pre_condition": "<what the caller guarantees before calling>",
-      "post_condition": "<what the caller expects after the call>"
+      "post_condition": "<what the caller expects after the call>",
+      "invariants": "<optional: callee properties that must hold continuously while the callee runs>",
+      "resources": "<optional: resource/memory contracts the caller must honor, e.g. the caller releases a resource the callee returns>",
+      "ordering": "<optional: ordering the callee requires, e.g. a lock the caller must hold before calling>",
+      "concurrency": "<optional: concurrency contract the callee requires, e.g. the caller must hold a lock so the callee's check-then-act sequence is atomic>"
     }
   ]
 }
 ```
+
+The optional `invariants`/`resources`/`ordering`/`concurrency` fields on a callee entry mirror the
+same fields in `.spec.json`, written from the caller's perspective. Fill them in only
+when the callee's contract constrains its callers: for example, the callee returns a
+resource the caller must release, or the callee requires a specific lock order or
+that a lock is held while it runs, or the caller must hold a lock across the call so
+the callee's operations on shared state stay atomic. Otherwise omit them.
 
 If a function has no callees relevant to the spec, write `{"callees": []}` to the `.info.json` file.
 

@@ -272,6 +272,9 @@ def _analysis_detail(result):
         detail["Verdict"] = verdict
     gaps = result.get("gaps")
     if isinstance(gaps, dict):
+        kind = gaps.get("kind")
+        if kind:
+            detail["Violation type"] = kind
         for label, key in (
             ("Spec claim", "spec_claim"),
             ("Actual behavior", "actual_behavior"),
